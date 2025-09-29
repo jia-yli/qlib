@@ -145,6 +145,133 @@ class BaostockCollectorHS3005min(BaseCollector):
         return str(symbol).replace(".", "").upper()
 
 
+class BaostockCollectorHS3001d(BaseCollector):
+    def __init__(
+        self,
+        save_dir: [str, Path],
+        start=None,
+        end=None,
+        interval="5min",
+        max_workers=4,
+        max_collector_count=2,
+        delay=0,
+        check_data_length: int = None,
+        limit_nums: int = None,
+    ):
+        """
+
+        Parameters
+        ----------
+        save_dir: str
+            stock save dir
+        max_workers: int
+            workers, default 4
+        max_collector_count: int
+            default 2
+        delay: float
+            time.sleep(delay), default 0
+        interval: str
+            freq, value from [5min], default 5min
+        start: str
+            start datetime, default None
+        end: str
+            end datetime, default None
+        check_data_length: int
+            check data length, by default None
+        limit_nums: int
+            using for debug, by default None
+        """
+        bs.login()
+        super(BaostockCollectorHS3001d, self).__init__(
+            save_dir=save_dir,
+            start=start,
+            end=end,
+            interval=interval,
+            max_workers=max_workers,
+            max_collector_count=max_collector_count,
+            delay=delay,
+            check_data_length=check_data_length,
+            limit_nums=limit_nums,
+        )
+
+    def get_trade_calendar(self):
+        _format = "%Y-%m-%d"
+        start = self.start_datetime.strftime(_format)
+        end = self.end_datetime.strftime(_format)
+        rs = bs.query_trade_dates(start_date=start, end_date=end)
+        calendar_list = []
+        while (rs.error_code == "0") & rs.next():
+            calendar_list.append(rs.get_row_data())
+        calendar_df = pd.DataFrame(calendar_list, columns=rs.fields)
+        trade_calendar_df = calendar_df[~calendar_df["is_trading_day"].isin(["0"])]
+        return trade_calendar_df["calendar_date"].values
+
+    @staticmethod
+    def process_interval(interval: str):
+        if interval == "1d":
+            return {"interval": "d", "fields": "date,code,open,high,low,close,volume,amount,adjustflag"}
+        if interval == "5min":
+            return {"interval": "5", "fields": "date,time,code,open,high,low,close,volume,amount,adjustflag"}
+
+    def get_data(
+        self, symbol: str, interval: str, start_datetime: pd.Timestamp, end_datetime: pd.Timestamp
+    ) -> pd.DataFrame:
+        df = self.get_data_from_remote(
+            symbol=symbol, interval=interval, start_datetime=start_datetime, end_datetime=end_datetime
+        )
+        df.columns = ["date", "symbol", "open", "high", "low", "close", "volume", "amount", "adjustflag"]
+        df["symbol"] = df["symbol"].map(lambda x: str(x).replace(".", "").upper())
+        return df
+
+    @staticmethod
+    def get_data_from_remote(
+        symbol: str, interval: str, start_datetime: pd.Timestamp, end_datetime: pd.Timestamp
+    ) -> pd.DataFrame:
+        df = pd.DataFrame()
+        rs = bs.query_history_k_data_plus(
+            symbol,
+            BaostockCollectorHS3001d.process_interval(interval=interval)["fields"],
+            start_date=str(start_datetime.strftime("%Y-%m-%d")),
+            end_date=str(end_datetime.strftime("%Y-%m-%d")),
+            frequency=BaostockCollectorHS3001d.process_interval(interval=interval)["interval"],
+            adjustflag="3",
+        )
+        if rs.error_code == "0" and len(rs.data) > 0:
+            data_list = rs.data
+            columns = rs.fields
+            df = pd.DataFrame(data_list, columns=columns)
+        return df
+
+    def get_hs300_symbols(self) -> List[str]:
+        hs300_stocks = []
+        trade_calendar = self.get_trade_calendar()
+        with tqdm(total=len(trade_calendar)) as p_bar:
+            for date in trade_calendar:
+                rs = bs.query_hs300_stocks(date=date)
+                while rs.error_code == "0" and rs.next():
+                    row = rs.get_row_data()
+                    hs300_stocks.append(
+                        {
+                            "date": date,
+                            **{k: v for k, v in zip(rs.fields, row)},
+                        }
+                    )
+                p_bar.update()
+        hs300_stocks_full_record = pd.DataFrame(hs300_stocks)
+        hs300_stocks_full_record.to_csv(self.save_dir.joinpath(f"symbol_full_record.csv"), index=False)
+        hs300_symbols = hs300_stocks_full_record["code"].unique().tolist()
+        return sorted(hs300_symbols)
+
+    def get_instrument_list(self):
+        logger.info("get HS300 stock symbols......")
+        symbols = self.get_hs300_symbols()
+        logger.info(f"get {len(symbols)} symbols.")
+        return symbols
+
+    def normalize_symbol(self, symbol: str):
+        return str(symbol).replace(".", "").upper()
+
+
 class BaostockNormalizeHS3005min(BaseNormalize):
     COLUMNS = ["open", "close", "high", "low", "volume"]
     AM_RANGE = ("09:30:00", "11:29:00")
