@@ -13,14 +13,12 @@ from pathlib import Path
 from loguru import logger
 from typing import Iterable, List
 
-import qlib
-from qlib.data import D
 
 CUR_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CUR_DIR.parent.parent))
 
 from data_collector.base import BaseCollector, BaseNormalize, BaseRun
-from data_collector.utils import generate_minutes_calendar_from_daily, calc_adjusted_price
+from data_collector.utils import deco_retry
 
 class MyBaostockCollector1d(BaseCollector):
     def __init__(
@@ -86,6 +84,7 @@ class MyBaostockCollector1d(BaseCollector):
         trade_calendar_df = calendar_df[~calendar_df["is_trading_day"].isin(["0"])]
         return trade_calendar_df["calendar_date"].values
 
+    @deco_retry(retry_sleep=5, retry=5)
     def get_data(
         self, symbol: str, interval: str, start_datetime: pd.Timestamp, end_datetime: pd.Timestamp
     ) -> pd.DataFrame:
@@ -153,17 +152,23 @@ class MyBaostockCollector1d(BaseCollector):
         trade_calendar = self.get_trade_calendar()
         with tqdm(total=len(trade_calendar)) as p_bar:
             for date_idx, date in enumerate(trade_calendar):
-                rs = eval(f"bs.query_{index}_stocks")(date=date)
-                step_stocks_lst = []
-                while rs.error_code == "0" and rs.next():
-                    row = rs.get_row_data()
-                    step_stocks_lst.append(
-                        {
-                            "date": date,
-                            **{k: v for k, v in zip(rs.fields, row)},
-                        }
-                    )
-                step_stocks_df = pd.DataFrame(step_stocks_lst)
+                @deco_retry(retry_sleep=5, retry=5)
+                def fetch_step_stocks(index, date):
+                    rs = eval(f"bs.query_{index}_stocks")(date=date)
+                    step_stocks_lst = []
+                    if rs.error_code != "0":
+                        raise ValueError(f"fetch {index} {date} stocks error, error_code: {rs.error_code}, error_msg: {rs.error_msg}")
+                    while rs.next():
+                        row = rs.get_row_data()
+                        step_stocks_lst.append(
+                            {
+                                "date": date,
+                                **{k: v for k, v in zip(rs.fields, row)},
+                            }
+                        )
+                    step_stocks_df = pd.DataFrame(step_stocks_lst)
+                    return step_stocks_df
+                step_stocks_df = fetch_step_stocks(index, date)
 
                 todays_codes = step_stocks_df["code"].unique().tolist()
                 # update index stocks
@@ -215,8 +220,8 @@ class MyBaostockCollector1d(BaseCollector):
     def get_instrument_list(self):
         # index_lst = ['sz50', 'hs300', 'zz500']
         # index_symbols = ['sh.000016', 'sh.000300', 'sh.000905']  # sz50, hs300, zz500
-        index_lst = ['sz50', 'hs300']
-        index_symbols = ['sh.000016', 'sh.000300']  # sz50, hs300
+        index_lst = ['hs300']
+        index_symbols = ['sh.000300']  # sz50, hs300
 
         stock_symbols = []
         for index in index_lst:
@@ -232,111 +237,6 @@ class MyBaostockCollector1d(BaseCollector):
 
     def normalize_symbol(self, symbol: str):
         return str(symbol).replace(".", "").upper()
-
-
-class BaostockNormalizeHS3005min(BaseNormalize):
-    COLUMNS = ["open", "close", "high", "low", "volume"]
-    AM_RANGE = ("09:30:00", "11:29:00")
-    PM_RANGE = ("13:00:00", "14:59:00")
-
-    def __init__(
-        self, qlib_data_1d_dir: [str, Path], date_field_name: str = "date", symbol_field_name: str = "symbol", **kwargs
-    ):
-        """
-
-        Parameters
-        ----------
-        qlib_data_1d_dir: str, Path
-            the qlib data to be updated for yahoo, usually from: Normalised to 5min using local 1d data
-        date_field_name: str
-            date field name, default is date
-        symbol_field_name: str
-            symbol field name, default is symbol
-        """
-        bs.login()
-        qlib.init(provider_uri=qlib_data_1d_dir)
-        self.all_1d_data = D.features(D.instruments("all"), ["$paused", "$volume", "$factor", "$close"], freq="day")
-        super(BaostockNormalizeHS3005min, self).__init__(date_field_name, symbol_field_name)
-
-    @staticmethod
-    def calc_change(df: pd.DataFrame, last_close: float) -> pd.Series:
-        df = df.copy()
-        _tmp_series = df["close"].ffill()
-        _tmp_shift_series = _tmp_series.shift(1)
-        if last_close is not None:
-            _tmp_shift_series.iloc[0] = float(last_close)
-        change_series = _tmp_series / _tmp_shift_series - 1
-        return change_series
-
-    def _get_calendar_list(self) -> Iterable[pd.Timestamp]:
-        return self.generate_5min_from_daily(self.calendar_list_1d)
-
-    @property
-    def calendar_list_1d(self):
-        calendar_list_1d = getattr(self, "_calendar_list_1d", None)
-        if calendar_list_1d is None:
-            calendar_list_1d = self._get_1d_calendar_list()
-            setattr(self, "_calendar_list_1d", calendar_list_1d)
-        return calendar_list_1d
-
-    @staticmethod
-    def normalize_baostock(
-        df: pd.DataFrame,
-        calendar_list: list = None,
-        date_field_name: str = "date",
-        symbol_field_name: str = "symbol",
-        last_close: float = None,
-    ):
-        if df.empty:
-            return df
-        symbol = df.loc[df[symbol_field_name].first_valid_index(), symbol_field_name]
-        columns = copy.deepcopy(BaostockNormalizeHS3005min.COLUMNS)
-        df = df.copy()
-        df.set_index(date_field_name, inplace=True)
-        df.index = pd.to_datetime(df.index)
-        df = df[~df.index.duplicated(keep="first")]
-        if calendar_list is not None:
-            df = df.reindex(
-                pd.DataFrame(index=calendar_list)
-                .loc[pd.Timestamp(df.index.min()).date() : pd.Timestamp(df.index.max()).date() + pd.Timedelta(days=1)]
-                .index
-            )
-        df.sort_index(inplace=True)
-        df.loc[(df["volume"] <= 0) | np.isnan(df["volume"]), list(set(df.columns) - {symbol_field_name})] = np.nan
-
-        df["change"] = BaostockNormalizeHS3005min.calc_change(df, last_close)
-
-        columns += ["change"]
-        df.loc[(df["volume"] <= 0) | np.isnan(df["volume"]), columns] = np.nan
-
-        df[symbol_field_name] = symbol
-        df.index.names = [date_field_name]
-        return df.reset_index()
-
-    def generate_5min_from_daily(self, calendars: Iterable) -> pd.Index:
-        return generate_minutes_calendar_from_daily(
-            calendars, freq="5min", am_range=self.AM_RANGE, pm_range=self.PM_RANGE
-        )
-
-    def adjusted_price(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = calc_adjusted_price(
-            df=df,
-            _date_field_name=self._date_field_name,
-            _symbol_field_name=self._symbol_field_name,
-            frequence="5min",
-            _1d_data_all=self.all_1d_data,
-        )
-        return df
-
-    def _get_1d_calendar_list(self) -> Iterable[pd.Timestamp]:
-        return list(D.calendar(freq="day"))
-
-    def normalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        # normalize
-        df = self.normalize_baostock(df, self._calendar_list, self._date_field_name, self._symbol_field_name)
-        # adjusted price
-        df = self.adjusted_price(df)
-        return df
 
 
 class Run(BaseRun):
