@@ -22,26 +22,18 @@ def save_figs(figs, path, stem):
 
 if __name__ == "__main__":
     # config
-    provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/baostock_cn_data_1day_test/bin"  # target_dir
-    market = "all" # "all", "csi300"
-    benchmark = "SH600000" # "SH600000", "SH000300"
-    train_split = ("2024-01-01", "2024-11-30")
-    valid_split = ("2024-12-01", "2025-02-28")
-    test_split  = ("2025-03-01", "2025-08-31")
-
-
-    # provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/cn_data"  # target_dir
-    # market = "all"
-    # benchmark = "SH600000"
-    # train_split = ("2015-01-01", "2015-12-31")
-    # valid_split = ("2016-01-01", "2016-12-31")
-    # test_split  = ("2017-01-01", "2017-06-30")
+    provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/cn_my_baostock/bin"  # target_dir
+    market = "hs300"
+    benchmark = "SH000300"
+    train_split = ("2020-01-01", "2022-12-31")
+    valid_split = ("2023-01-01", "2023-12-31")
+    test_split  = ("2024-01-01", "2025-09-29")
 
 
     qlib.init(provider_uri=provider_uri, region=REG_CN)
     utc_timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
     mlrun_path = f"/capstor/scratch/cscs/ljiayong/workspace/qlib/mlruns/{utc_timestamp}"
-    mlrun_uri = f"file:///{mlrun_path}"
+    mlrun_uri = f"file://{mlrun_path}"
     R.set_uri(mlrun_uri)
 
     data_handler_config = {
@@ -114,7 +106,6 @@ if __name__ == "__main__":
             "benchmark": benchmark,
             "exchange_kwargs": {
                 "freq": "day",
-                "codes": market,
                 "trade_unit": 100,
                 "limit_threshold": 0.095,
                 "deal_price": "close",
@@ -152,9 +143,18 @@ if __name__ == "__main__":
     report_normal_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
     positions = recorder.load_object("portfolio_analysis/positions_normal_1day.pkl")
     analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
+    import pdb;pdb.set_trace()
 
     figs = analysis_position.report_graph(report_normal_df, show_notebook=False)
     save_figs(figs, mlrun_path, "report_normal")
 
     figs = analysis_position.risk_analysis_graph(analysis_df, report_normal_df, show_notebook=False)
     save_figs(figs, mlrun_path, "risk_analysis")
+
+    # label_df = dataset.prepare("test", col_set="label")
+    # label_df.columns = ["label"]
+
+    # pred_label = pd.concat([label_df, pred_df], axis=1, sort=True).reindex(label_df.index)
+    # analysis_position.score_ic_graph(pred_label)
+
+    # analysis_model.model_performance_graph(pred_label)
