@@ -59,7 +59,7 @@ def fetch_all_pages(start_time, end_time, step, save_path):
   base_url = "https://web.archive.org/web/"
   target_url = "https://coinmarketcap.com/"
   current_time = start_time
-  while current_time <= end_time:
+  while current_time < end_time:
     time_stamp = current_time.strftime("%Y%m%d%H%M%S")
     url_lst = [f"{base_url}{time_stamp}/{target_url}/"] + [f"{base_url}{time_stamp}/{target_url}/?page={n}" for n in range(2, 7)] # first 6 pages
 
@@ -87,10 +87,10 @@ def fetch_all_pages(start_time, end_time, step, save_path):
     df.to_feather(save_path / "raw.feather")
   return df
 
-def get_symbols_from_raw(df):
+def get_symbols_from_raw(df, start_time, end_time):
   df = df[['timestamp', 'page_id', 'symbols']].copy()
   df["month_start"] = (df["timestamp"] + pd.offsets.MonthBegin(1)).dt.normalize()
-  df = df[(df["month_start"] >= start_time) & (df["month_start"] <= end_time)]
+  df = df[(df["month_start"] >= start_time) & (df["month_start"] < end_time)]
   df = (
     df[["month_start", "symbols"]]
     .groupby("month_start", as_index=False)
@@ -104,7 +104,9 @@ def get_symbols_from_raw(df):
   #   columns='page_id', 
   #   aggfunc=lambda s: sorted(set(s.explode().dropna()))
   # )
-  df = df.reindex(pd.date_range(start_time, end_time, freq='MS')).ffill()
+  df = df.reindex(
+    pd.date_range(start_time, end_time, freq='MS', inclusive="left")
+  ).ffill()
   df['symbols'] = df['symbols'].apply(lambda x: x if isinstance(x, list) else [])
 
   symbol_enlisted_time = {}
@@ -141,10 +143,16 @@ def _get_kline_data(symbol, interval, start_time, end_time, limit):
     # Not OK
     logger.warning(f"{symbol} {start_time} to {end_time} {interval} data fetch failed: {response.status_code}")
     if response.status_code == 400:
-      if response.json()['code'] == -1121: # {"code":-1121,"msg":"Invalid symbol."}
-        # invalid symbol -> not exists
+      if response.json()['code'] == -1121:
+        # {"code":-1121,"msg":"Invalid symbol."}
         logger.warning(f"{symbol} not exists")
         return [] # no kline
+      elif response.json()['code'] == -1100: 
+        # {"code":-1100,"msg":"Illegal characters found in parameter 'symbol'; legal range is '^[A-Z0-9-_.]{1,20}$'."}
+        logger.warning(f"{symbol} not exists")
+        return []
+      else:
+        logger.warning(f"{symbol}: {response.text}")
     if response.status_code in [418, 429]:
       delay = int(response.headers.get("Retry-After", 1))
       logger.warning(f"retry after {delay}s")
@@ -207,30 +215,46 @@ def get_kline_data(symbol, interval, start_time, end_time):
   )
   return df
 
+def process_raw_kline(df, freq):
+  # Reformat the raw data: proper index and throw unused cols
+  df['date'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
+  start_time = df['date'].min()
+  end_time   = df['date'].max()
+  df = df.set_index('date').reindex(
+    pd.date_range(start=start_time, end=end_time, freq=freq)
+  )
+  '''
+  Remaining columns: 
+  open_price
+  high_price
+  low_price
+  close_price
+  base_volume
+  quote_volume
+  num_trades
+  taker_base_volume
+  taker_quote_volume
+  '''
+  df = df.drop(['open_time', 'close_time', 'ignore'], axis=1)
+  # fill missing
+  df['close_price'] = df['close_price'].ffill()
+  # fill ohl with last close
+  df['open_price'] = df['open_price'].combine_first(df['close_price'])
+  df['high_price'] = df['high_price'].combine_first(df['close_price'])
+  df['low_price']  = df['low_price'] .combine_first(df['close_price'])
+  # fill volume with 0
+  df['base_volume'] = df['base_volume'].fillna(0)
+  df['quote_volume'] = df['quote_volume'].fillna(0)
+  df['num_trades'] = df['num_trades'].fillna(0)
+  df['taker_base_volume'] = df['taker_base_volume'].fillna(0)
+  df['taker_quote_volume'] = df['taker_quote_volume'].fillna(0)
 
-# def fetch_data(symbol_enlisted_time, interval, start_time, end_time, save_path):
-  # df, start_time, end_time = BinanceData.get_kline_data_1m(symbol, start_time, end_time)
-  # ts_name = f"{symbol}_{start_time.strftime('%Y%m%d_%H%M%S')}_{start_time.tzinfo}_{end_time.strftime('%Y%m%d_%H%M%S')}_{end_time.tzinfo}"
-  # save_path = os.path.join(dataset_base_path, 'raw')
-  # os.makedirs(save_path, exist_ok=True)
-  # output_file = os.path.join(save_path, f'{ts_name}.csv')
-  # df.to_csv(output_file, index=False)
-  # print(f"[SUCCESS] Symbol {symbol} data from {start_time} to {end_time} is fetched, with shape {df.shape}, saved to {output_file}")
-  # for symbol
-  # [get_kline_data() for in]
-  # res = Parallel(n_jobs=4)(
-  #   delayed(get_kline_data)(
-  #     symbol,
-  #     interval, 
-  #     start_time,
-  #     end_time)
-  #     for _inst in tqdm(instrument_list)
-  # )
+  return df
 
 
 if __name__ == "__main__":
-  start = "2021-01-01"
-  end   = "2025-10-01"
+  start = "2021-01-01" # inc
+  end   = "2025-10-01" # not inc
 
   start_time = pd.Timestamp(start, tz="UTC").normalize()
   end_time = pd.Timestamp(end, tz="UTC").normalize()
@@ -242,6 +266,9 @@ if __name__ == "__main__":
   instrument_list_save_path = save_path / "raw" / "instrument_list"
   instrument_list_save_path.mkdir(parents=True, exist_ok=True)
 
+  workspace_path = instrument_list_save_path / "workspace"
+  workspace_path.mkdir(parents=True, exist_ok=True)
+
   '''
   1. Fetch Raw Instrument List Info
   '''
@@ -251,18 +278,42 @@ if __name__ == "__main__":
   '''
   2. Process Instrument List
   '''
-  df = pd.read_feather(instrument_list_save_path / "raw.feather")
-  symbol_enlisted_time = get_symbols_from_raw(df)
+  # df = pd.read_feather(instrument_list_save_path / "raw.feather")
+  # symbol_enlisted_time = get_symbols_from_raw(df, start_time, end_time)
 
   '''
   3. Fetch Daily KLine
   '''
-  for symbol, enlisted_time in zip(symbol_enlisted_time['symbol'], symbol_enlisted_time['enlisted_time']):
-    df = get_kline_data(symbol+"USDT", '1d', enlisted_time, pd.Timestamp("2021-02-05", tz="UTC").normalize())
-    # TODO
-    # 1. pair not exist
-    # 2. pair no data in period
-    # 3. filter stable coin
+  
+  # trade_symbol_info = {}
+  # for symbol, enlisted_time in zip(symbol_enlisted_time['symbol'], symbol_enlisted_time['enlisted_time']):
+  #   trade_symbol = symbol + "USDT"
+  #   df = get_kline_data(trade_symbol, '1d', enlisted_time, end_time)
+  #   trade_symbol_info[trade_symbol] = {
+  #     "trade_symbol": trade_symbol,
+  #     "kline_exists": not df.empty,
+  #   }
+  #   if not df.empty:
+  #     df.to_csv(workspace_path / f"{trade_symbol}.csv", index=False)
+  # pd.DataFrame(list(trade_symbol_info.values())).to_csv(workspace_path / f"trade_symbol_info.csv", index=False)
+
+  '''
+  4. Build Index: Components, Weights, and Value
+  '''
+  trade_symbol_info = pd.read_csv(workspace_path / f"trade_symbol_info.csv")
+  trade_symbol_klines = {}
+  for trade_symbol, kline_exists in zip(trade_symbol_info['trade_symbol'], trade_symbol_info['kline_exists']):
+    if kline_exists:
+      kline_df = pd.read_csv(workspace_path / f"{trade_symbol}.csv")
+      kline_df = process_raw_kline(kline_df, '1d')
+      trade_symbol_klines[trade_symbol] = kline_df
+  
+  volume_df = pd.concat({sym: df['quote_volume'] for sym, df in trade_symbol_klines.items()}, axis=1).sort_index()
+  change_df = pd.concat({sym: df['close_price'] / df['close_price'].shift(1) - 1 for sym, df in trade_symbol_klines.items()}, axis=1).sort_index()
+  
+  import pdb;pdb.set_trace()
+  # TODO
+  # filter stable coin
   
 
   # pd.pivot_table(df, values
@@ -282,3 +333,24 @@ if __name__ == "__main__":
 
   # import pdb; pdb.set_trace()
   # print(json.dumps(snaps, indent=2))
+
+# def resample_data(symbol, start_time, end_time, dataset_base_path):
+#     resample_period_lst = [1, 5, 10, 15, 30, 60]
+#     cleaned_data_path=os.path.join(dataset_base_path, 'cleaned')
+#     ts_name = f"{symbol}_{start_time.strftime('%Y%m%d_%H%M%S')}_{start_time.tzinfo}_{end_time.strftime('%Y%m%d_%H%M%S')}_{end_time.tzinfo}"
+#     cleaned_data = pd.read_feather(os.path.join(cleaned_data_path, f'{ts_name}.feather'))
+
+#     agg_dict = {
+#       'open_price': 'first',
+#       'high_price': 'max',
+#       'low_price': 'min',
+#       'close_price': 'last',
+#       'quote_volume': 'sum',
+#       'taker_quote_volume': 'sum',
+#       'end_timestamp': 'last',
+#     }
+
+#     # Perform resampling
+#     for resample_period in resample_period_lst:
+#       resampled_data = cleaned_data[['open_price', 'high_price', 'low_price', 'close_price', 'quote_volume', 'taker_quote_volume', 'end_timestamp']].resample(f'{resample_period}min').agg(agg_dict)
+#       resampled_data.to_feather(os.path.join(cleaned_data_path, f'{ts_name}_{resample_period}min.feather'))
