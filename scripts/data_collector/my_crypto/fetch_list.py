@@ -4,6 +4,7 @@ import sys
 import json
 import time
 import requests
+import numpy as np
 import pandas as pd
 from pathlib import Path
 from loguru import logger
@@ -251,6 +252,64 @@ def process_raw_kline(df, freq):
 
   return df
 
+def get_enlisted_state(enter_condition, exit_condition):
+  # a saturate counter between [0, 1] for traking state
+  # 0 is outside and 1 is inside
+  enter_condition = enter_condition.astype(float).fillna(0).astype(int) # don't incl if not valid
+  exit_condition  = exit_condition .astype(float).fillna(1).astype(int) # kick out if not valid
+
+  assert enter_condition.index.equals(exit_condition.index) and enter_condition.columns.equals(exit_condition.columns)
+
+  delta = enter_condition.values - exit_condition.values
+
+  T, N = delta.shape
+  enlisted_state = np.zeros((T, N), dtype=bool)
+  s = np.full(N, 0, dtype=bool)
+  for t_idx in range(T):
+    d = delta[t_idx] # [N] delta for all assets
+    enter_ = d == 1
+    exit_ = d == -1
+    s[enter_] = True
+    s[exit_] = False
+    enlisted_state[t_idx] = s
+  
+  return pd.DataFrame(
+    enlisted_state, 
+    index = enter_condition.index, 
+    columns = enter_condition.columns,
+  )
+
+def extract_enlisted_regions(enlisted_state):
+  '''
+  extract boundaries of consecutive regions
+  '''
+  edges = enlisted_state.ne(enlisted_state.shift(1, fill_value=False))
+  region_id = edges.cumsum() # new region after edge: id + 1
+  # now only need some fancy groupby to get first and last in the region
+  # drop outside id
+  enlisted_region_info = (
+    region_id.where(enlisted_state)
+    .reset_index(names="date")
+    .melt(
+      id_vars = "date",
+      var_name = "symbol",
+      value_name = "region_id",
+    )
+  ).dropna(subset=["region_id"])
+  # agg
+  enlisted_regions = (
+    enlisted_region_info.groupby(["symbol", "region_id"])["date"]
+    .agg(
+      enlisted_region_start = "min",
+      enlisted_region_end_incl = "max",
+    )
+    .reset_index()
+    .drop(columns="region_id")
+    .sort_values(["enlisted_region_start", "symbol"])
+    .reset_index(drop=True)
+  )
+  return enlisted_regions
+
 
 if __name__ == "__main__":
   start = "2021-01-01" # inc
@@ -269,6 +328,9 @@ if __name__ == "__main__":
   workspace_path = instrument_list_save_path / "workspace"
   workspace_path.mkdir(parents=True, exist_ok=True)
 
+  raw_kline_path = save_path / "raw"
+  raw_kline_path.mkdir(parents=True, exist_ok=True)
+
   '''
   1. Fetch Raw Instrument List Info
   '''
@@ -284,13 +346,13 @@ if __name__ == "__main__":
   '''
   3. Fetch Daily KLine
   '''
-  
   # trade_symbol_info = {}
   # for symbol, enlisted_time in zip(symbol_enlisted_time['symbol'], symbol_enlisted_time['enlisted_time']):
   #   trade_symbol = symbol + "USDT"
-  #   df = get_kline_data(trade_symbol, '1d', enlisted_time, end_time)
+  #   df = get_kline_data(trade_symbol, '1d', start_time, end_time)
   #   trade_symbol_info[trade_symbol] = {
   #     "trade_symbol": trade_symbol,
+  #     "enlisted_time": enlisted_time,
   #     "kline_exists": not df.empty,
   #   }
   #   if not df.empty:
@@ -298,41 +360,64 @@ if __name__ == "__main__":
   # pd.DataFrame(list(trade_symbol_info.values())).to_csv(workspace_path / f"trade_symbol_info.csv", index=False)
 
   '''
-  4. Build Index: Components, Weights, and Value
+  4. Build Index: Components
   '''
-  trade_symbol_info = pd.read_csv(workspace_path / f"trade_symbol_info.csv")
-  trade_symbol_klines = {}
-  for trade_symbol, kline_exists in zip(trade_symbol_info['trade_symbol'], trade_symbol_info['kline_exists']):
-    if kline_exists:
-      kline_df = pd.read_csv(workspace_path / f"{trade_symbol}.csv")
-      kline_df = process_raw_kline(kline_df, '1d')
-      trade_symbol_klines[trade_symbol] = kline_df
+  # trade_symbol_info = pd.read_csv(workspace_path / f"trade_symbol_info.csv")
+  # trade_symbol_klines = {}
+  # for trade_symbol, kline_exists in zip(trade_symbol_info['trade_symbol'], trade_symbol_info['kline_exists']):
+  #   if kline_exists:
+  #     kline_df = pd.read_csv(workspace_path / f"{trade_symbol}.csv")
+  #     kline_df = process_raw_kline(kline_df, '1d')
+  #     trade_symbol_klines[trade_symbol] = kline_df
   
-  volume_df = pd.concat({sym: df['quote_volume'] for sym, df in trade_symbol_klines.items()}, axis=1).sort_index()
-  change_df = pd.concat({sym: df['close_price'] / df['close_price'].shift(1) - 1 for sym, df in trade_symbol_klines.items()}, axis=1).sort_index()
+  # # liquidity screen: 30 day avg > 1M USDT/day
+  # volume_threshold = 1_000_000
+  # enlist_threshold = 0.15
+  # reconstitution_dates = pd.date_range(start_time, end_time, freq='MS', inclusive="left")
+
+  # volume_df = pd.concat({sym: df['quote_volume'] for sym, df in trade_symbol_klines.items()}, axis=1).sort_index()
+  # enter_condition = volume_df.shift(1).rolling(30).mean().fillna(0) > volume_threshold * (1 + enlist_threshold)
+  # exit_condition  = volume_df.shift(1).rolling(30).mean().fillna(0) < volume_threshold * (1 - enlist_threshold)
+
+  # # filter stable coin
+  # change_df = pd.concat({sym: df['close_price'] / df['close_price'].shift(1) - 1 for sym, df in trade_symbol_klines.items()}, axis=1).sort_index()
+  # change_eligible = change_df.shift(1).rolling(30).quantile(0.9) > 0.01
+
+  # enter_condition = enter_condition & change_eligible
+
+  # # enter after enlisted time
+  # symbol_enlisted_time = pd.to_datetime(
+  #   trade_symbol_info[trade_symbol_info['kline_exists']]
+  #   .set_index('trade_symbol')['enlisted_time']
+  # )
+
+  # causality_mask = pd.DataFrame(
+  #   enter_condition.index.values[:, np.newaxis] >= symbol_enlisted_time.reindex(enter_condition.columns).values[np.newaxis, :],
+  #   index = enter_condition.index,
+  #   columns = enter_condition.columns,
+  # )
+  # enter_condition = enter_condition & causality_mask
+
+  # enter_condition = enter_condition.reindex(reconstitution_dates)
+  # exit_condition = exit_condition.reindex(reconstitution_dates)
+
+  # enlisted_state = get_enlisted_state(enter_condition, exit_condition)
+  # enlisted_state.to_feather(workspace_path / f"enlisted_state.feather")
+
+  # enlisted_regions = extract_enlisted_regions(enlisted_state)
+  # enlisted_regions["enlisted_region_end"] = enlisted_regions["enlisted_region_end_incl"] + pd.offsets.MonthBegin(1)
+  # enlisted_regions.to_feather(workspace_path / f"enlisted_regions.feather")
   
-  import pdb;pdb.set_trace()
-  # TODO
-  # filter stable coin
-  
+  '''
+  5. Fetch 15min Kline
+  '''
+  enlisted_state = pd.read_feather(workspace_path / f"enlisted_state.feather")
+  trade_symbols = enlisted_state.loc[:, enlisted_state.any()].columns
+  for trade_symbol in trade_symbols:
+    df = get_kline_data(trade_symbol, '15m', start_time, end_time)
+    assert not df.empty
+    df.to_csv(raw_kline_path / f"{trade_symbol}.csv", index=False)
 
-  # pd.pivot_table(df, values
-  # all_month_start = pd.date_range(start_time, end_time, freq='MS')
-  # all_page_id = pd.Index(df["page_id"].unique(), name="page_id")
-  # all_index = pd.Multi
-  
-
-  # df['symbols'] = df['content'].apply(parse_page)
-
-  # open("1.html", "w").write(df.loc[1, "content"])
-  # # snaps = list_snapshots_between(url, start, end)
-  # url = "https://web.archive.org/web/20240216024121/https://coinmarketcap.com/"
-  # url = "https://web.archive.org/web/20250810032118/https://coinmarketcap.com/?page=6"
-  # r = requests.get(url)
-  # r.url
-
-  # import pdb; pdb.set_trace()
-  # print(json.dumps(snaps, indent=2))
 
 # def resample_data(symbol, start_time, end_time, dataset_base_path):
 #     resample_period_lst = [1, 5, 10, 15, 30, 60]
