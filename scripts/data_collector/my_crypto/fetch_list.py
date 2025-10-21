@@ -360,7 +360,7 @@ if __name__ == "__main__":
   # pd.DataFrame(list(trade_symbol_info.values())).to_csv(workspace_path / f"trade_symbol_info.csv", index=False)
 
   '''
-  4. Build Index: Components
+  4. Build Index: Components & Weights
   '''
   # trade_symbol_info = pd.read_csv(workspace_path / f"trade_symbol_info.csv")
   # trade_symbol_klines = {}
@@ -407,16 +407,43 @@ if __name__ == "__main__":
   # enlisted_regions = extract_enlisted_regions(enlisted_state)
   # enlisted_regions["enlisted_region_end"] = enlisted_regions["enlisted_region_end_incl"] + pd.offsets.MonthBegin(1)
   # enlisted_regions.to_feather(workspace_path / f"enlisted_regions.feather")
+
+  # # weight
+  # # volume weighted
+  # volume_df = pd.concat({sym: df['quote_volume'] for sym, df in trade_symbol_klines.items()}, axis=1).sort_index()
+  # weight_volume = volume_df.shift(1).rolling(30).mean().reindex(enlisted_state.index).fillna(0)
+  # weight_volume = weight_volume * enlisted_state
+  # weight_volume.to_feather(workspace_path / f"weight_volume.feather")
+
+  # # equal weighted
+  # weight_equal = enlisted_state.astype(float)
+  # weight_equal.to_feather(workspace_path / f"weight_equal.feather")
   
   '''
   5. Fetch 15min Kline
   '''
-  enlisted_state = pd.read_feather(workspace_path / f"enlisted_state.feather")
-  trade_symbols = enlisted_state.loc[:, enlisted_state.any()].columns
-  for trade_symbol in trade_symbols:
-    df = get_kline_data(trade_symbol, '15m', start_time, end_time)
-    assert not df.empty
-    df.to_csv(raw_kline_path / f"{trade_symbol}.csv", index=False)
+  # enlisted_state = pd.read_feather(workspace_path / f"enlisted_state.feather")
+  # trade_symbols = enlisted_state.loc[:, enlisted_state.any()].columns
+  # for trade_symbol in trade_symbols:
+  #   df = get_kline_data(trade_symbol, '15m', start_time, end_time)
+  #   assert not df.empty
+  #   df.to_csv(raw_kline_path / f"{trade_symbol}.csv", index=False)
+  
+  '''
+  6. Resample
+  '''
+  import pdb;pdb.set_trace()
+  
+
+
+
+  '''
+  7. Get Custom Index 
+  '''
+
+  '''
+  8. Dump Ready
+  '''
 
 
 # def resample_data(symbol, start_time, end_time, dataset_base_path):
