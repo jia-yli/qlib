@@ -252,6 +252,21 @@ def process_raw_kline(df, freq):
 
   return df
 
+def resample_data(df, freq):
+  agg_dict = {
+    'open_price': 'first',
+    'high_price': 'max',
+    'low_price': 'min',
+    'close_price': 'last',
+    'base_volume': 'sum',
+    'quote_volume': 'sum',
+    'num_trades': 'sum',
+    'taker_base_volume': 'sum',
+    'taker_quote_volume': 'sum',
+  }
+  
+  return df.resample(freq).agg(agg_dict)
+
 def get_enlisted_state(enter_condition, exit_condition):
   # a saturate counter between [0, 1] for traking state
   # 0 is outside and 1 is inside
@@ -310,10 +325,127 @@ def extract_enlisted_regions(enlisted_state):
   )
   return enlisted_regions
 
+def synthesize_custom_index(klines, weight, date_range):
+  # normalize
+  weight = weight.loc[:, (weight > 0).any()]
+  weight = weight.div(weight.sum(axis=1), axis=0).fillna(0)
+  weight = weight.reindex(date_range, method="ffill").fillna(0)
+  # results
+  open_price_mult_lst    = []
+  high_price_mult_lst    = []
+  low_price_mult_lst     = []
+  close_price_mult_lst   = []
+  vwap_mult_lst          = []
+  quote_volume_lst       = []
+  num_trades_lst         = []
+  taker_vwap_mult_lst    = []
+  taker_quote_volume_lst = []
+  # kline
+  for trade_symbol in weight.columns:
+    kline = klines[trade_symbol]
+    kline = kline.reindex(date_range)
+
+    # ffill close
+    kline['close_price'] = kline['close_price'].ffill()
+    # fill ohl with last close
+    kline['open_price'] = kline['open_price'].combine_first(kline['close_price'])
+    kline['high_price'] = kline['high_price'].combine_first(kline['close_price'])
+    kline['low_price']  = kline['low_price'] .combine_first(kline['close_price'])
+
+    # bfill open
+    kline['open_price'] = kline['open_price'].bfill()
+    # fill hlc with first open
+    kline['high_price']  = kline['high_price'] .combine_first(kline['open_price'])
+    kline['low_price']   = kline['low_price']  .combine_first(kline['open_price'])
+    kline['close_price'] = kline['close_price'].combine_first(kline['open_price'])
+
+    # fill volume with 0
+    kline['base_volume']        = kline['base_volume'].fillna(0)
+    kline['quote_volume']       = kline['quote_volume'].fillna(0)
+    kline['num_trades']         = kline['num_trades'].fillna(0)
+    kline['taker_base_volume']  = kline['taker_base_volume'].fillna(0)
+    kline['taker_quote_volume'] = kline['taker_quote_volume'].fillna(0)
+
+    kline['vwap'] = (kline['quote_volume'] / kline['base_volume']).combine_first(kline['open_price'])
+    kline['taker_vwap'] = (kline['taker_quote_volume'] / kline['taker_base_volume']).combine_first(kline['open_price'])
+    # previous close to compute change
+    kline['previous_close'] = kline['close_price'].shift(1)
+    # no previous close if prev is padded
+    kline.loc[kline['quote_volume'].shift(1, fill_value=0) <= 0, 'previous_close'] = np.nan
+
+    kline['open_price_mult' ] = (kline['open_price']  / kline['previous_close'] - 1).fillna(0)
+    kline['high_price_mult' ] = (kline['high_price']  / kline['previous_close'] - 1).fillna(0)
+    kline['low_price_mult'  ] = (kline['low_price']   / kline['previous_close'] - 1).fillna(0)
+    kline['close_price_mult'] = (kline['close_price'] / kline['previous_close'] - 1).fillna(0)
+    kline['vwap_mult'       ] = (kline['vwap']        / kline['previous_close'] - 1).fillna(0)
+    kline['taker_vwap_mult' ] = (kline['taker_vwap']  / kline['previous_close'] - 1).fillna(0)
+
+    open_price_mult_lst   .append(kline['open_price_mult'   ].rename(trade_symbol))
+    high_price_mult_lst   .append(kline['high_price_mult'   ].rename(trade_symbol))
+    low_price_mult_lst    .append(kline['low_price_mult'    ].rename(trade_symbol))
+    close_price_mult_lst  .append(kline['close_price_mult'  ].rename(trade_symbol))
+    vwap_mult_lst         .append(kline['vwap_mult'         ].rename(trade_symbol))
+    quote_volume_lst      .append(kline['quote_volume'      ].rename(trade_symbol))
+    num_trades_lst        .append(kline['num_trades'        ].rename(trade_symbol))
+    taker_vwap_mult_lst   .append(kline['taker_vwap_mult'   ].rename(trade_symbol))
+    taker_quote_volume_lst.append(kline['taker_quote_volume'].rename(trade_symbol))
+
+  open_price_mult    = pd.concat(open_price_mult_lst   , axis=1)
+  high_price_mult    = pd.concat(high_price_mult_lst   , axis=1)
+  low_price_mult     = pd.concat(low_price_mult_lst    , axis=1)
+  close_price_mult   = pd.concat(close_price_mult_lst  , axis=1)
+  vwap_mult          = pd.concat(vwap_mult_lst         , axis=1)
+  quote_volume       = pd.concat(quote_volume_lst      , axis=1)
+  num_trades         = pd.concat(num_trades_lst        , axis=1)
+  taker_vwap_mult    = pd.concat(taker_vwap_mult_lst   , axis=1)
+  taker_quote_volume = pd.concat(taker_quote_volume_lst, axis=1)
+
+  # aggregate by weight
+  open_price_mult    = (open_price_mult    * weight).sum(axis=1)
+  high_price_mult    = (high_price_mult    * weight).sum(axis=1)
+  low_price_mult     = (low_price_mult     * weight).sum(axis=1)
+  close_price_mult   = (close_price_mult   * weight).sum(axis=1)
+  vwap_mult          = (vwap_mult          * weight).sum(axis=1)
+  quote_volume       = (quote_volume       * weight).sum(axis=1)
+  num_trades         = (num_trades         * weight).sum(axis=1)
+  taker_vwap_mult    = (taker_vwap_mult    * weight).sum(axis=1)
+  taker_quote_volume = (taker_quote_volume * weight).sum(axis=1)
+
+  index_init_value = 100
+  close_price = index_init_value * (1 + close_price_mult).cumprod()
+  previous_close = close_price.shift(1, fill_value=index_init_value)
+
+  open_price  = previous_close * (1 + open_price_mult )
+  high_price  = previous_close * (1 + high_price_mult )
+  low_price   = previous_close * (1 + low_price_mult  )
+  vwap        = previous_close * (1 + vwap_mult       )
+  taker_vwap  = previous_close * (1 + taker_vwap_mult )
+
+  base_volume = quote_volume / vwap
+  taker_base_volume = taker_quote_volume / taker_vwap
+
+  custom_index_kline = pd.DataFrame(
+    {
+      'open_price'        : open_price        ,
+      'high_price'        : high_price        ,
+      'low_price'         : low_price         ,
+      'close_price'       : close_price       ,
+      'base_volume'       : base_volume       ,
+      'quote_volume'      : quote_volume      ,
+      'num_trades'        : num_trades        ,
+      'taker_base_volume' : taker_base_volume ,
+      'taker_quote_volume': taker_quote_volume,
+    },
+    index = date_range,
+  )
+
+  return custom_index_kline
 
 if __name__ == "__main__":
   start = "2021-01-01" # inc
   end   = "2025-10-01" # not inc
+
+  resample_freq_lst = ['15min', '30min', '1h', '4h', '12h', '1d']
 
   start_time = pd.Timestamp(start, tz="UTC").normalize()
   end_time = pd.Timestamp(end, tz="UTC").normalize()
@@ -330,6 +462,9 @@ if __name__ == "__main__":
 
   raw_kline_path = save_path / "raw"
   raw_kline_path.mkdir(parents=True, exist_ok=True)
+
+  resampled_kline_path = save_path / "resampled"
+  resampled_kline_path.mkdir(parents=True, exist_ok=True)
 
   '''
   1. Fetch Raw Instrument List Info
@@ -430,39 +565,65 @@ if __name__ == "__main__":
   #   df.to_csv(raw_kline_path / f"{trade_symbol}.csv", index=False)
   
   '''
-  6. Resample
+  6. Resample & Make Dump-Ready
   '''
-  import pdb;pdb.set_trace()
-  
+  enlisted_state = pd.read_feather(workspace_path / f"enlisted_state.feather")
+  weight_volume = pd.read_feather(workspace_path / f"weight_volume.feather")
+  weight_equal = pd.read_feather(workspace_path / f"weight_equal.feather")
 
+  enlisted_regions = extract_enlisted_regions(enlisted_state)
+  enlisted_regions['enlisted_region_start'] = enlisted_regions['enlisted_region_start'].dt.strftime("%Y-%m-%d %H:%M:%S")
+  enlisted_regions['enlisted_region_end_incl'] = enlisted_regions['enlisted_region_end_incl'].dt.strftime("%Y-%m-%d %H:%M:%S")
+  enlisted_regions[["symbol", "enlisted_region_start", "enlisted_region_end_incl"]].to_csv(
+    instrument_list_save_path / "my_universe.txt", sep='\t', index=False, header=False
+  )
 
+  trade_symbols = enlisted_state.columns[enlisted_state.any()]
+  trade_symbol_klines = {}
+  for trade_symbol in trade_symbols:
+    kline_df = pd.read_csv(raw_kline_path / f"{trade_symbol}.csv")
+    kline_df = process_raw_kline(kline_df, '15min')
+    trade_symbol_klines[trade_symbol] = kline_df
 
-  '''
-  7. Get Custom Index 
-  '''
+  for resample_freq in resample_freq_lst:
+    resample_freq_save_path = resampled_kline_path / resample_freq
+    resample_freq_save_path.mkdir(parents=True, exist_ok=True)
 
-  '''
-  8. Dump Ready
-  '''
+    # kline
+    resampled_klines = {}
+    for trade_symbol in trade_symbols:
+      kline = trade_symbol_klines[trade_symbol]
+      resampled_kline = resample_data(kline, resample_freq)
+      resampled_klines[trade_symbol] = resampled_kline
 
+    # index
+    custom_index_volume = synthesize_custom_index(resampled_klines, weight_volume, pd.date_range(start_time, end_time, freq=resample_freq, inclusive="left"))
+    custom_index_equal  = synthesize_custom_index(resampled_klines, weight_equal, pd.date_range(start_time, end_time, freq=resample_freq, inclusive="left"))
 
-# def resample_data(symbol, start_time, end_time, dataset_base_path):
-#     resample_period_lst = [1, 5, 10, 15, 30, 60]
-#     cleaned_data_path=os.path.join(dataset_base_path, 'cleaned')
-#     ts_name = f"{symbol}_{start_time.strftime('%Y%m%d_%H%M%S')}_{start_time.tzinfo}_{end_time.strftime('%Y%m%d_%H%M%S')}_{end_time.tzinfo}"
-#     cleaned_data = pd.read_feather(os.path.join(cleaned_data_path, f'{ts_name}.feather'))
+    resampled_klines["MYINDEXVOL"] = custom_index_volume
+    resampled_klines["MYINDEXEQ" ] = custom_index_equal 
 
-#     agg_dict = {
-#       'open_price': 'first',
-#       'high_price': 'max',
-#       'low_price': 'min',
-#       'close_price': 'last',
-#       'quote_volume': 'sum',
-#       'taker_quote_volume': 'sum',
-#       'end_timestamp': 'last',
-#     }
+    for trade_symbol in trade_symbols:
+      kline = resampled_klines[trade_symbol]
+      kline = kline.rename(
+        columns = {
+          'open_price'        : 'open',
+          'high_price'        : 'high',
+          'low_price'         : 'low',
+          'close_price'       : 'close',
+          'base_volume'       : 'volume',
+          'quote_volume'      : 'amount',
+          'num_trades'        : 'numtrades',
+          'taker_base_volume' : 'takervolume',
+          'taker_quote_volume': 'takeramount',
+        }
+      )
+      # set nan
+      # kline.loc[(kline["volume"] <= 0) | np.isnan(kline["volume"]), :] = np.nan
+      kline.insert(0, 'symbol', trade_symbol)
+      kline['change'] = kline['close'] / kline["close"].shift(1) - 1
+      kline['factor'] = 1
+      kline.insert(0, 'date', kline.index.strftime("%Y-%m-%d %H:%M:%S"))
 
-#     # Perform resampling
-#     for resample_period in resample_period_lst:
-#       resampled_data = cleaned_data[['open_price', 'high_price', 'low_price', 'close_price', 'quote_volume', 'taker_quote_volume', 'end_timestamp']].resample(f'{resample_period}min').agg(agg_dict)
-#       resampled_data.to_feather(os.path.join(cleaned_data_path, f'{ts_name}_{resample_period}min.feather'))
+      kline.to_csv(resample_freq_save_path / f"{trade_symbol}.csv", index=False)
+

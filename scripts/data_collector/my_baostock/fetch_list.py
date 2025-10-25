@@ -134,30 +134,8 @@ def get_kline_data(symbol, start_time, end_time):
     raise ValueError(f"fetch {symbol} adjclose error, error_code: {rs_adj.error_code}, error_msg: {rs_adj.error_msg}")
   return df
 
-# def normalize_symbol(self, symbol: str):
-#   return str(symbol).replace(".", "").upper()
-# df = df.rename(columns={"code": "symbol"})
-# df["symbol"] = df["symbol"].apply(self.normalize_symbol)
-# df.to_csv(self.raw_dir.joinpath(f"{self.normalize_symbol(symbol)}.csv"), index=False)
-
-# df = pd.read_csv(self.raw_dir.joinpath(f"{self.normalize_symbol(symbol)}.csv"))
-# # process df
-# df["factor"] = df["adjclose"].astype(float) / df["close"].astype(float)
-# df["factor"] = df["factor"].ffill()
-# df.drop(columns=["adjclose"], inplace=True)
-# for col in df.columns:
-#     if col in ["date", "symbol", "amount", "turn", "factor"]:
-#         pass
-#     elif col in ["open", "high", "low", "close"]:
-#         df[col] = df[col].astype(float) * df["factor"]
-#     elif col in ["volume"]:
-#         df[col] = df[col].astype(float) / df["factor"]
-#     else:
-#         raise ValueError(f"Unknown column: {col}")
-
-# df["change"] = df["close"] / df["close"].shift(1) - 1
-# return df
-
+def normalize_symbol(symbol):
+  return str(symbol).replace(".", "").upper()
 
 if __name__ == "__main__":
   start = "2019-01-01" # inc
@@ -178,6 +156,9 @@ if __name__ == "__main__":
   raw_kline_path = save_path / "raw"
   raw_kline_path.mkdir(parents=True, exist_ok=True)
 
+  processed_kline_path = save_path / "processed"
+  processed_kline_path.mkdir(parents=True, exist_ok=True)
+
   '''
   1. Fetch Raw Instrument List Info
   '''
@@ -190,44 +171,107 @@ if __name__ == "__main__":
   '''
   2. Get Index Components
   '''
-  symbols = set()
-  for index in index_lst:
-    df = pd.read_feather(instrument_list_save_path / f"{index}_raw.feather")
-    df['date'] = pd.to_datetime(df['fetch_date'])
-    df['is_enlisted'] = 1
-    enlisted_state = (
-      pd.pivot_table(
-        df,
-        values = 'is_enlisted',
-        index = 'date',
-        columns = 'code',
-        aggfunc = 'sum',
-        fill_value = 0,
-      )
-      .astype(bool)
-      .sort_index()
-    )
-    enlisted_state.to_feather(instrument_list_save_path / f"{index}_enlisted_state.feather")
-    enlisted_regions = extract_enlisted_regions(enlisted_state)
-    symbols.update(enlisted_regions['symbol'].unique())
+  # symbols = set()
+  # for index in index_lst:
+  #   df = pd.read_feather(instrument_list_save_path / f"{index}_raw.feather")
+  #   df['date'] = pd.to_datetime(df['fetch_date'])
+  #   df['is_enlisted'] = 1
+  #   enlisted_state = (
+  #     pd.pivot_table(
+  #       df,
+  #       values = 'is_enlisted',
+  #       index = 'date',
+  #       columns = 'code',
+  #       aggfunc = 'sum',
+  #       fill_value = 0,
+  #     )
+  #     .astype(bool)
+  #     .sort_index()
+  #   )
+  #   enlisted_state.to_feather(instrument_list_save_path / f"{index}_enlisted_state.feather")
+  #   enlisted_regions = extract_enlisted_regions(enlisted_state)
+  #   symbols.update(enlisted_regions['symbol'].unique())
 
-  symbols.update(index_symbols)
-  all_symbols = sorted(symbols)
+  # symbols.update(index_symbols)
+  # all_symbols = sorted(symbols)
 
   '''
   3. Fetch Klines for Symbols
   '''
-  bs.login()
-  for symbol in all_symbols:
-    df = get_kline_data(symbol, start_time, end_time)
-    df.to_csv(raw_kline_path / f"{symbol}.csv", index=False)
-  bs.logout()
+  # bs.login()
+  # for symbol in all_symbols:
+  #   df = get_kline_data(symbol, start_time, end_time)
+  #   df.to_csv(raw_kline_path / f"{symbol}.csv", index=False)
+  # bs.logout()  
+
+  '''
+  4. Make Data Dump-Ready
+  '''
+  symbol_klines = {}
+  trade_calendar = None
+  for i, index in enumerate(index_lst):
+    enlisted_state = pd.read_feather(instrument_list_save_path / f"{index}_enlisted_state.feather")
+    trade_calendar = enlisted_state.index
+    enlisted_regions = extract_enlisted_regions(enlisted_state)
+
+    symbols = [index_symbols[i]] + list(enlisted_regions["symbol"].unique())
+    for symbol in symbols:
+      if symbol not in symbol_klines.keys():
+        symbol_klines[symbol] = pd.read_csv(raw_kline_path / f"{symbol}.csv")
+
+    enlisted_regions["symbol"] = enlisted_regions["symbol"].apply(normalize_symbol)
+    enlisted_regions["enlisted_region_start"] = enlisted_regions["enlisted_region_start"].dt.strftime("%Y-%m-%d")
+    enlisted_regions["enlisted_region_end_incl"] = enlisted_regions["enlisted_region_end_incl"].dt.strftime("%Y-%m-%d")
+    enlisted_regions[["symbol", "enlisted_region_start", "enlisted_region_end_incl"]].to_csv(
+      instrument_list_save_path / f"{index}.txt", sep='\t', index=False, header=False
+    )
+
+  for symbol, df in symbol_klines.items():
+    normalized_symbol = normalize_symbol(symbol)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date")
+    df = df.reindex(trade_calendar[(trade_calendar >= df.index.min()) & (trade_calendar <= df.index.max())])
+    '''
+    date,code,open,high,low,close,volume,amount,turn,tradestatus,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST,adjclose
+    '''
+    df.insert(0, 'date', df.index.strftime("%Y-%m-%d"))
+    df.rename(columns={"code": "symbol"}, inplace=True)
+    df["symbol"] = normalized_symbol
+    # fill missing
+    df["close"] = df["close"].ffill()
+    # fill ohl with last close
+    df["open"] = df["open"].combine_first(df["close"])
+    df["high"] = df["high"].combine_first(df["close"])
+    df["low"]  = df["low"] .combine_first(df["close"])
+    # fill volume with 0
+    df["volume"] = df["volume"].fillna(0)
+    df["amount"] = df["amount"].fillna(0)
+    df["turn"]   = df["turn"]  .fillna(0)
+    df["tradestatus"] = df["tradestatus"].fillna(0)
+    df.drop(columns="tradestatus", inplace=True)
+
+    df["peTTM"] = df["peTTM"].ffill()
+    df["pbMRQ"] = df["pbMRQ"].ffill()
+    df["psTTM"] = df["psTTM"].ffill()
+    df["pcfNcfTTM"] = df["pcfNcfTTM"].ffill()
+    df["isST"] = df["isST"].ffill()
+    df.drop(columns="isST", inplace=True)
+
+    df["factor"] = df["adjclose"] / df["close"]
+    df["factor"] = df["factor"].ffill()
+    df.drop(columns="adjclose", inplace=True)
+    for col in df.columns:
+      if col in ["date", "symbol", "amount", "turn", "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM", "factor"]:
+        pass
+      elif col in ["open", "high", "low", "close"]:
+        df[col] = df[col] * df["factor"]
+      elif col in ["volume"]:
+        df[col] = df[col] / df["factor"]
+      else:
+        raise ValueError(f"Unknown column: {col}")
+
+    df["change"] = df["close"] / df["close"].shift(1) - 1
+
+    df.to_csv(processed_kline_path / f"{normalized_symbol}.csv", index=False)
 
 
-  # save_dir = self.save_dir.joinpath("metadata")
-  # save_dir.mkdir(parents=True, exist_ok=True)
-  # appearance_spans_df.to_csv(save_dir.joinpath(f"{index}_symbol_record.csv"), index=False)
-  # appearance_spans_df["code"] = appearance_spans_df["code"].apply(self.normalize_symbol)
-  # appearance_spans_df[["code", "first_appear_date", "last_appear_date"]].to_csv(
-  #   save_dir.joinpath(f"{index}.txt"), sep='\t', index=False, header=False
-  # )

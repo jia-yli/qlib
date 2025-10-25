@@ -1,0 +1,5 @@
+loguru
+requests
+tqdm
+beautifulsoup4
+yahooquery
