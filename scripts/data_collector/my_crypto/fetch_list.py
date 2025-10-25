@@ -572,11 +572,22 @@ if __name__ == "__main__":
   weight_equal = pd.read_feather(workspace_path / f"weight_equal.feather")
 
   enlisted_regions = extract_enlisted_regions(enlisted_state)
-  enlisted_regions['enlisted_region_start'] = enlisted_regions['enlisted_region_start'].dt.strftime("%Y-%m-%d %H:%M:%S")
-  enlisted_regions['enlisted_region_end_incl'] = enlisted_regions['enlisted_region_end_incl'].dt.strftime("%Y-%m-%d %H:%M:%S")
-  enlisted_regions[["symbol", "enlisted_region_start", "enlisted_region_end_incl"]].to_csv(
-    instrument_list_save_path / "my_universe.txt", sep='\t', index=False, header=False
-  )
+  enlisted_regions["enlisted_region_end"] = enlisted_regions["enlisted_region_end_incl"] + pd.offsets.MonthBegin(1)
+
+  for resample_freq in resample_freq_lst:
+    resample_freq_instruments_save_path = resampled_kline_path / resample_freq / "instruments"
+    resample_freq_instruments_save_path.mkdir(parents=True, exist_ok=True)
+    # universe
+    pd.concat(
+      [
+        enlisted_regions['symbol'],
+        enlisted_regions['enlisted_region_start'].dt.strftime("%Y-%m-%d %H:%M:%S"),
+        (enlisted_regions['enlisted_region_end'] - pd.to_timedelta(resample_freq)).dt.strftime("%Y-%m-%d %H:%M:%S"),
+      ],
+      axis=1,
+    ).to_csv(
+      resample_freq_instruments_save_path / "my_universe.txt", sep='\t', index=False, header=False
+    )
 
   trade_symbols = enlisted_state.columns[enlisted_state.any()]
   trade_symbol_klines = {}
