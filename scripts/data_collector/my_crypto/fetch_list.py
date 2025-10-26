@@ -445,7 +445,7 @@ if __name__ == "__main__":
   start = "2021-01-01" # inc
   end   = "2025-10-01" # not inc
 
-  resample_freq_lst = ['15min', '30min', '1h', '4h', '12h', '1d']
+  resample_freq_lst = ['15min', '30min', '60min', '240min', '720min', '1d']
 
   start_time = pd.Timestamp(start, tz="UTC").normalize()
   end_time = pd.Timestamp(end, tz="UTC").normalize()

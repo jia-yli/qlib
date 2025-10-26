@@ -12,7 +12,7 @@ import re
 import pandas as pd
 
 from qlib.config import C
-from qlib.constant import REG_CN, REG_TW, REG_US
+from qlib.constant import REG_CN, REG_TW, REG_US, REG_CRYPTO
 
 
 CN_TIME = [
@@ -26,6 +26,7 @@ TW_TIME = [
     datetime.strptime("9:00", "%H:%M"),
     datetime.strptime("13:30", "%H:%M"),
 ]
+CRYPTO_TIME = [datetime.strptime("00:00", "%H:%M"), datetime.strptime("00:00", "%H:%M") + timedelta(days=1)]
 
 
 @functools.lru_cache(maxsize=240)
@@ -63,6 +64,11 @@ def get_min_cal(shift: int = 0, region: str = REG_CN) -> List[time]:
     elif region == REG_US:
         for ts in list(
             pd.date_range(US_TIME[0], US_TIME[1] - timedelta(minutes=1), freq="1min") - pd.Timedelta(minutes=shift)
+        ):
+            cal.append(ts.time())
+    elif region == REG_CRYPTO:
+        for ts in list(
+            pd.date_range(CRYPTO_TIME[0], CRYPTO_TIME[1] - timedelta(minutes=1), freq="1min") - pd.Timedelta(minutes=shift)
         ):
             cal.append(ts.time())
     else:
@@ -107,6 +113,13 @@ def is_single_value(start_time, end_time, freq, region: str = REG_CN):
         if start_time.hour == 15 and start_time.minute == 59 and start_time.second == 0:
             return True
         return False
+    elif region == REG_CRYPTO:
+        if end_time - start_time < freq:
+            return True
+        if start_time.hour == 23 and start_time.minute == 59 and start_time.second == 0:
+            return True
+        return False
+
     else:
         raise NotImplementedError(f"please implement the is_single_value func for {region}")
 
@@ -274,6 +287,11 @@ def time_to_day_index(time_obj: Union[str, datetime], region: str = REG_CN):
     elif region == REG_TW:
         if TW_TIME[0] <= time_obj < TW_TIME[1]:
             return int((time_obj - TW_TIME[0]).total_seconds() / 60)
+        else:
+            raise ValueError(f"{time_obj} is not the opening time of the {region} stock market")
+    elif region == REG_CRYPTO:
+        if CRYPTO_TIME[0] <= time_obj < CRYPTO_TIME[1]:
+            return int((time_obj - CRYPTO_TIME[0]).total_seconds() / 60)
         else:
             raise ValueError(f"{time_obj} is not the opening time of the {region} stock market")
     else:

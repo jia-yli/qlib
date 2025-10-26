@@ -113,6 +113,7 @@ def get_exchange(
 def create_account_instance(
     start_time: Union[pd.Timestamp, str],
     end_time: Union[pd.Timestamp, str],
+    freq,
     benchmark: Optional[str],
     account: Union[float, int, dict],
     pos_type: str = "Position",
@@ -162,6 +163,7 @@ def create_account_instance(
         init_cash=init_cash,
         position_dict=position_dict,
         pos_type=pos_type,
+        freq=freq,
         benchmark_config=(
             {}
             if benchmark is None
@@ -193,6 +195,7 @@ def get_strategy_executor(
     trade_account = create_account_instance(
         start_time=start_time,
         end_time=end_time,
+        freq=exchange_kwargs['freq'],
         benchmark=benchmark,
         account=account,
         pos_type=pos_type,
