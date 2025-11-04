@@ -272,7 +272,7 @@ class Exchange:
 
     def _update_limit(self, limit_threshold: Union[Tuple, float, None]) -> None:
         # $close may contain NaN, the nan indicates that the stock is not tradable at that timestamp
-        suspended = self.quote_df["$close"].isna()
+        suspended = self.quote_df["$close"].isna() | (self.quote_df["$volume"] <= 0) | self.quote_df["$volume"].isna()
         # check limit_threshold
         limit_type = self._get_limit_type(limit_threshold)
         if limit_type == self.LT_NONE:

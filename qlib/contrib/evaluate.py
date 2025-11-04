@@ -23,6 +23,21 @@ from ..data.dataset.utils import get_level_index
 
 logger = get_module_logger("Evaluate")
 
+def fit_capm(r, r_m, N, r_f_annual=2e-2):
+    assert r.index.equals(r_m.index)
+    r_f = (1 + r_f_annual)**(1 / N) - 1
+
+    beta = np.cov(r, r_m, ddof=1)[0, 1] / np.var(r_m, ddof=1)
+    alpha = (r - r_f).mean() - beta * (r_m - r_f).mean()
+
+    # alpha_annual = (1 + alpha)**N - 1
+    alpha_annual = alpha * N
+    data = {
+        "alpha": alpha,
+        "beta": beta,
+        "alpha_annual": alpha_annual,
+    }
+    return pd.Series(data).to_frame("CAPM")
 
 def risk_analysis(r, N: int = None, freq: str = "day", mode: Literal["sum", "product"] = "sum"):
     """Risk Analysis

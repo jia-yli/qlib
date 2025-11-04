@@ -7,25 +7,14 @@ from qlib.constant import REG_CN
 from qlib.utils import init_instance_by_config, flatten_dict
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
-from qlib.contrib.report import analysis_model, analysis_position
-
-def save_figs(figs, path, stem):
-    """Save a list/tuple of Plotly figures to HTML (and optionally PNG)."""
-    # if not isinstance(figs, (list, tuple)):
-    #     figs = [figs]
-    for i, fig in enumerate(figs):
-        html_path = os.path.join(path, f"{stem}_{i}.html")
-        fig.write_html(html_path, include_plotlyjs="cdn")
-
-        # png_path = os.path.join(path, f"{stem}_{i}.png")
-        # fig.write_image(png_path, scale=2)
+from qlib.contrib.report import analysis_position
 
 if __name__ == "__main__":
     # config
-    provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/bin"  # target_dir
+    provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/bin" # = resampled
     freq = "day"
     _freq = "1day"
-    deal_price = "open"
+    deal_price = "close"
     market = "hs300" # sz50, hs300, zz500
     benchmark = "SH000300" # SH000016, SH000300, SH000905
     train_split = ("2020-01-01", "2022-12-31")
@@ -100,8 +89,8 @@ if __name__ == "__main__":
             "module_path": "qlib.contrib.strategy.signal_strategy",
             "kwargs": {
                 "signal": (model, dataset),
-                "topk": 50,
-                "n_drop": 5,
+                "topk": 20,
+                "n_drop": 2,
             },
         },
         "backtest": {
@@ -139,7 +128,7 @@ if __name__ == "__main__":
         sar.generate()
 
         # backtest & analysis
-        par = PortAnaRecord(recorder, port_analysis_config, risk_analysis_freq=freq)
+        par = PortAnaRecord(recorder, config=port_analysis_config, N=246, risk_analysis_freq=freq)
         par.generate()
 
     recorder = R.get_recorder(recorder_id=rid, experiment_name="workflow")
@@ -148,18 +137,5 @@ if __name__ == "__main__":
     report_normal_df = recorder.load_object(f"portfolio_analysis/report_normal_{_freq}.pkl")
     positions = recorder.load_object(f"portfolio_analysis/positions_normal_{_freq}.pkl")
     analysis_df = recorder.load_object(f"portfolio_analysis/port_analysis_{_freq}.pkl")
-    # import pdb;pdb.set_trace()
 
-    figs = analysis_position.report_graph(report_normal_df, show_notebook=False)
-    save_figs(figs, mlrun_path, "report_normal")
-
-    figs = analysis_position.risk_analysis_graph(analysis_df, report_normal_df, show_notebook=False)
-    save_figs(figs, mlrun_path, "risk_analysis")
-
-    # label_df = dataset.prepare("test", col_set="label")
-    # label_df.columns = ["label"]
-
-    # pred_label = pd.concat([label_df, pred_df], axis=1, sort=True).reindex(label_df.index)
-    # analysis_position.score_ic_graph(pred_label)
-
-    # analysis_model.model_performance_graph(pred_label)
+    analysis_position.report_graph(report_normal_df, show_notebook=False, save_path=f"./scripts/train/cn/{_freq}")

@@ -240,12 +240,16 @@ class Account:
             for code in stock_list:
                 # if suspended, no new price to be updated, profit is 0
                 if trade_exchange.check_stock_suspended(code, trade_start_time, trade_end_time):
+                    self.current_position.add_stock_suspended_count(stock_id=code, bar=self.freq)
                     continue
+                else:
+                    self.current_position.clear_stock_suspended_count(stock_id=code, bar=self.freq)
                 bar_close = cast(float, trade_exchange.get_close(code, trade_start_time, trade_end_time))
                 self.current_position.update_stock_price(stock_id=code, price=bar_close)
             # update holding day count
             # NOTE: updating bar_count does not only serve portfolio metrics, it also serve the strategy
             self.current_position.add_count_all(bar=self.freq)
+            self.current_position.remove_long_suspended_stock(bar=self.freq, max_suspended_counts=10)
 
     def update_portfolio_metrics(self, trade_start_time: pd.Timestamp, trade_end_time: pd.Timestamp) -> None:
         """update portfolio_metrics"""

@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-
+import os
 import pandas as pd
 
 from ..graph import SubplotsGraph, BaseGraph
@@ -17,7 +17,7 @@ def _calculate_maximum(df: pd.DataFrame, is_ex: bool = False):
         end_date = df["cum_ex_return_wo_cost_mdd"].idxmin()
         start_date = df.loc[df.index <= end_date]["cum_ex_return_wo_cost"].idxmax()
     else:
-        end_date = df["return_wo_mdd"].idxmin()
+        end_date = df["return_wo_cost_mdd"].idxmin()
         start_date = df.loc[df.index <= end_date]["cum_return_wo_cost"].idxmax()
     return start_date, end_date
 
@@ -43,18 +43,19 @@ def _calculate_report_data(df: pd.DataFrame) -> pd.DataFrame:
 
     report_df = pd.DataFrame()
 
-    report_df["cum_bench"] = df["bench"].cumsum()
-    report_df["cum_return_wo_cost"] = df["return"].cumsum()
-    report_df["cum_return_w_cost"] = (df["return"] - df["cost"]).cumsum()
+    report_df["cum_bench"] = (1 + df["bench"]).cumprod() - 1
+    report_df["cum_return_wo_cost"] = (1 + df["return"]).cumprod() - 1
+    report_df["cum_return_w_cost"] = (1 + df["return"] - df["cost"]).cumprod() - 1
+    report_df["cum_cost"] = df["total_cost"] / df["account"].iloc[0]
     # report_df['cum_return'] - report_df['cum_return'].cummax()
-    report_df["return_wo_mdd"] = _calculate_mdd(report_df["cum_return_wo_cost"])
-    report_df["return_w_cost_mdd"] = _calculate_mdd((df["return"] - df["cost"]).cumsum())
+    report_df["return_wo_cost_mdd"] = _calculate_mdd(report_df["cum_return_wo_cost"])
+    report_df["return_w_cost_mdd"] = _calculate_mdd(report_df["cum_return_w_cost"])
 
-    report_df["cum_ex_return_wo_cost"] = (df["return"] - df["bench"]).cumsum()
-    report_df["cum_ex_return_w_cost"] = (df["return"] - df["bench"] - df["cost"]).cumsum()
-    report_df["cum_ex_return_wo_cost_mdd"] = _calculate_mdd((df["return"] - df["bench"]).cumsum())
-    report_df["cum_ex_return_w_cost_mdd"] = _calculate_mdd((df["return"] - df["cost"] - df["bench"]).cumsum())
-    # return_wo_mdd , return_w_cost_mdd,  cum_ex_return_wo_cost_mdd, cum_ex_return_w
+    report_df["cum_ex_return_wo_cost"] = report_df["cum_return_wo_cost"] - report_df["cum_bench"]
+    report_df["cum_ex_return_w_cost"] = report_df["cum_return_w_cost"] - report_df["cum_bench"]
+    report_df["cum_ex_return_wo_cost_mdd"] = _calculate_mdd(report_df["cum_ex_return_wo_cost"])
+    report_df["cum_ex_return_w_cost_mdd"] = _calculate_mdd(report_df["cum_ex_return_w_cost"])
+    # return_wo_cost_mdd , return_w_cost_mdd,  cum_ex_return_wo_cost_mdd, cum_ex_return_w
 
     report_df["turnover"] = df["turnover"]
     report_df.sort_index(ascending=True, inplace=True)
@@ -93,20 +94,22 @@ def _report_figure(df: pd.DataFrame) -> [list, tuple]:
         ("cum_bench", dict(row=1, col=1)),
         ("cum_return_wo_cost", dict(row=1, col=1)),
         ("cum_return_w_cost", dict(row=1, col=1)),
-        ("return_wo_mdd", dict(row=2, col=1, graph_kwargs=_temp_fill_args)),
+        ("cum_cost", dict(row=2, col=1)),
+        # ("return_wo_cost_mdd", dict(row=2, col=1, graph_kwargs=_temp_fill_args)),
         ("return_w_cost_mdd", dict(row=3, col=1, graph_kwargs=_temp_fill_args)),
         ("cum_ex_return_wo_cost", dict(row=4, col=1)),
         ("cum_ex_return_w_cost", dict(row=4, col=1)),
         ("turnover", dict(row=5, col=1)),
+        # ("cum_ex_return_wo_cost_mdd", dict(row=7, col=1, graph_kwargs=_temp_fill_args)),
         ("cum_ex_return_w_cost_mdd", dict(row=6, col=1, graph_kwargs=_temp_fill_args)),
-        ("cum_ex_return_wo_cost_mdd", dict(row=7, col=1, graph_kwargs=_temp_fill_args)),
     ]
+    n_rows = 6
 
     _subplot_layout = dict()
-    for i in range(1, 8):
+    for i in range(1, n_rows+1):
         # yaxis
         _subplot_layout.update({"yaxis{}".format(i): dict(zeroline=True, showline=True, showticklabels=True)})
-        _show_line = i == 7
+        _show_line = i == n_rows
         _subplot_layout.update({"xaxis{}".format(i): dict(showline=_show_line, type="category", tickangle=45)})
 
     _layout_style = dict(
@@ -147,9 +150,9 @@ def _report_figure(df: pd.DataFrame) -> [list, tuple]:
     _subplot_kwargs = dict(
         shared_xaxes=True,
         vertical_spacing=0.01,
-        rows=7,
+        rows=n_rows,
         cols=1,
-        row_width=[1, 1, 1, 3, 1, 1, 3],
+        row_width=[1, 1, 3, 1, 1, 3],
         print_grid=False,
     )
     figure = SubplotsGraph(
@@ -163,7 +166,7 @@ def _report_figure(df: pd.DataFrame) -> [list, tuple]:
     return (figure,)
 
 
-def report_graph(report_df: pd.DataFrame, show_notebook: bool = True) -> [list, tuple]:
+def report_graph(report_df: pd.DataFrame, show_notebook: bool = True, save_path = None) -> [list, tuple]:
     """display backtest report
 
         Example:
@@ -242,6 +245,12 @@ def report_graph(report_df: pd.DataFrame, show_notebook: bool = True) -> [list, 
     """
     report_df = report_df.copy()
     fig_list = _report_figure(report_df)
+
+    if save_path:
+        os.makedirs(save_path, exist_ok=True)
+        for i, fig in enumerate(fig_list):
+            fig.write_html(os.path.join(save_path, f"report_graph_{i}.html"), include_plotlyjs="cdn")
+
     if show_notebook:
         BaseGraph.show_graph_in_notebook(fig_list)
     else:

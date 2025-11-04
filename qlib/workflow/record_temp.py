@@ -10,7 +10,7 @@ from pprint import pprint
 from typing import Union, List, Optional, Dict
 
 from qlib.utils.exceptions import LoadObjectError
-from ..contrib.evaluate import risk_analysis, indicator_analysis
+from ..contrib.evaluate import risk_analysis, indicator_analysis, fit_capm
 
 from ..data.dataset import DatasetH
 from ..data.dataset.handler import DataHandlerLP
@@ -374,6 +374,7 @@ class PortAnaRecord(ACRecordTemp):
     def __init__(
         self,
         recorder,
+        N,
         config=None,
         risk_analysis_freq: Union[List, str] = None,
         indicator_analysis_freq: Union[List, str] = None,
@@ -396,6 +397,7 @@ class PortAnaRecord(ACRecordTemp):
             the candidate values include 'mean', 'amount_weighted', 'value_weighted'
         """
         super().__init__(recorder=recorder, skip_existing=skip_existing, **kwargs)
+        self.N = N
 
         if config is None:
             config = {  # Default config for daily trading
@@ -499,29 +501,43 @@ class PortAnaRecord(ACRecordTemp):
             else:
                 report_normal, _ = portfolio_metric_dict.get(_analysis_freq)
                 analysis = dict()
-                analysis["excess_return_without_cost"] = risk_analysis(
-                    report_normal["return"] - report_normal["bench"], freq=_analysis_freq
-                )
-                analysis["excess_return_with_cost"] = risk_analysis(
-                    report_normal["return"] - report_normal["bench"] - report_normal["cost"], freq=_analysis_freq
-                )
+                analysis['bench'] = risk_analysis(report_normal["bench"], N=self.N, mode="product")
+                analysis['return_with_cost'] = risk_analysis(report_normal["return"]-report_normal["cost"], N=self.N, mode="product")
+                analysis['fit_capm'] = fit_capm(report_normal["return"]-report_normal["cost"], report_normal["bench"], N=self.N, r_f_annual=2e-2)
 
-                analysis_df = pd.concat(analysis)  # type: pd.DataFrame
-                # log metrics
-                analysis_dict = flatten_dict(analysis_df["risk"].unstack().T.to_dict())
-                self.recorder.log_metrics(**{f"{_analysis_freq}.{k}": v for k, v in analysis_dict.items()})
                 # save results
-                artifact_objects.update({f"port_analysis_{_analysis_freq}.pkl": analysis_df})
-                logger.info(
-                    f"Portfolio analysis record 'port_analysis_{_analysis_freq}.pkl' has been saved as the artifact of the Experiment {self.recorder.experiment_id}"
-                )
+                artifact_objects.update({f"port_analysis_{_analysis_freq}.pkl": analysis})
                 # print out results
                 pprint(f"The following are analysis results of benchmark return({_analysis_freq}).")
-                pprint(risk_analysis(report_normal["bench"], freq=_analysis_freq))
-                pprint(f"The following are analysis results of the excess return without cost({_analysis_freq}).")
-                pprint(analysis["excess_return_without_cost"])
-                pprint(f"The following are analysis results of the excess return with cost({_analysis_freq}).")
-                pprint(analysis["excess_return_with_cost"])
+                pprint(analysis['bench'])
+                pprint(f"The following are analysis results of the return with cost({_analysis_freq}).")
+                pprint(analysis['return_with_cost'])
+                pprint(f"The following are analysis results of the capm fitting({_analysis_freq}).")
+                pprint(analysis['fit_capm'])
+
+                # analysis["excess_return_without_cost"] = risk_analysis(
+                #     report_normal["return"] - report_normal["bench"], freq=_analysis_freq
+                # )
+                # analysis["excess_return_with_cost"] = risk_analysis(
+                #     report_normal["return"] - report_normal["bench"] - report_normal["cost"], freq=_analysis_freq
+                # )
+
+                # analysis_df = pd.concat(analysis)  # type: pd.DataFrame
+                # # log metrics
+                # analysis_dict = flatten_dict(analysis_df["risk"].unstack().T.to_dict())
+                # self.recorder.log_metrics(**{f"{_analysis_freq}.{k}": v for k, v in analysis_dict.items()})
+                # # save results
+                # artifact_objects.update({f"port_analysis_{_analysis_freq}.pkl": analysis_df})
+                # logger.info(
+                #     f"Portfolio analysis record 'port_analysis_{_analysis_freq}.pkl' has been saved as the artifact of the Experiment {self.recorder.experiment_id}"
+                # )
+                # # print out results
+                # pprint(f"The following are analysis results of benchmark return({_analysis_freq}).")
+                # pprint(risk_analysis(report_normal["bench"], freq=_analysis_freq))
+                # pprint(f"The following are analysis results of the excess return without cost({_analysis_freq}).")
+                # pprint(analysis["excess_return_without_cost"])
+                # pprint(f"The following are analysis results of the excess return with cost({_analysis_freq}).")
+                # pprint(analysis["excess_return_with_cost"])
 
         for _analysis_freq in self.indicator_analysis_freq:
             if _analysis_freq not in indicator_dict:

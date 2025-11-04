@@ -403,6 +403,19 @@ class Position(BasePosition):
 
     def update_stock_count(self, stock_id: str, bar: str, count: float) -> None:  # TODO: check type of `bar`
         self.position[stock_id][f"count_{bar}"] = count
+    
+    def add_stock_suspended_count(self, stock_id: str, bar: str) -> None:  # TODO: check type of `bar`
+        self.position[stock_id][f"suspended_count_{bar}"] = self.position[stock_id].get(f"suspended_count_{bar}", 0) + 1
+    
+    def clear_stock_suspended_count(self, stock_id: str, bar: str) -> None:  # TODO: check type of `bar`
+        self.position[stock_id].pop(f"suspended_count_{bar}", None)
+
+    def remove_long_suspended_stock(self, bar: str, max_suspended_counts: int):
+        stock_list = self.get_stock_list()
+        for stock_id in stock_list:
+            suspended_count = self.position[stock_id].get(f"suspended_count_{bar}", 0)
+            if suspended_count >= max_suspended_counts:
+                self._del_stock(stock_id)
 
     def update_stock_weight(self, stock_id: str, weight: float) -> None:
         self.position[stock_id]["weight"] = weight

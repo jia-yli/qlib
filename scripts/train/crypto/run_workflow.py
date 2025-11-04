@@ -7,23 +7,10 @@ from qlib.constant import REG_CRYPTO
 from qlib.utils import init_instance_by_config, flatten_dict
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
-from qlib.contrib.report import analysis_model, analysis_position
+from qlib.contrib.report import analysis_position
 
-def save_figs(figs, path, stem):
-    """Save a list/tuple of Plotly figures to HTML (and optionally PNG)."""
-    # if not isinstance(figs, (list, tuple)):
-    #     figs = [figs]
-    for i, fig in enumerate(figs):
-        html_path = os.path.join(path, f"{stem}_{i}.html")
-        fig.write_html(html_path, include_plotlyjs="cdn")
-
-        # png_path = os.path.join(path, f"{stem}_{i}.png")
-        # fig.write_image(png_path, scale=2)
-
-if __name__ == "__main__":
+def main(freq, _freq):
     # config
-    freq = "day" # day, 720min, 240min, 60min, 15min, 30min
-    _freq = "1day" # 1day, 720min, 240min, 60min, 15min, 30min
     deal_price = "open"
     provider_uri = f"/capstor/scratch/cscs/ljiayong/datasets/qlib/my_crypto/bin/{_freq}"
     market = "my_universe"
@@ -100,7 +87,7 @@ if __name__ == "__main__":
             "module_path": "qlib.contrib.strategy.signal_strategy",
             "kwargs": {
                 "signal": (model, dataset),
-                "topk": 10,
+                "topk": 20,
                 "n_drop": 2,
             },
         },
@@ -139,7 +126,8 @@ if __name__ == "__main__":
         sar.generate()
 
         # backtest & analysis
-        par = PortAnaRecord(recorder, port_analysis_config, risk_analysis_freq=freq)
+        N = 365 * int(pd.to_timedelta("1day") / pd.to_timedelta(_freq))
+        par = PortAnaRecord(recorder, config=port_analysis_config, N=N, risk_analysis_freq=freq)
         par.generate()
 
     recorder = R.get_recorder(recorder_id=rid, experiment_name="workflow")
@@ -148,18 +136,13 @@ if __name__ == "__main__":
     report_normal_df = recorder.load_object(f"portfolio_analysis/report_normal_{_freq}.pkl")
     positions = recorder.load_object(f"portfolio_analysis/positions_normal_{_freq}.pkl")
     analysis_df = recorder.load_object(f"portfolio_analysis/port_analysis_{_freq}.pkl")
+
+    analysis_position.report_graph(report_normal_df, show_notebook=False, save_path=f"./scripts/train/crypto/{_freq}")
     # import pdb;pdb.set_trace()
+    # sorted(model.predict(dataset).xs(pd.Timestamp('2024-07-23 00:00:00'), level=0).sort_values(ascending=False).iloc[:20].index)
 
-    figs = analysis_position.report_graph(report_normal_df, show_notebook=False)
-    save_figs(figs, mlrun_path, "report_normal")
-
-    figs = analysis_position.risk_analysis_graph(analysis_df, report_normal_df, show_notebook=False)
-    save_figs(figs, mlrun_path, "risk_analysis")
-
-    # label_df = dataset.prepare("test", col_set="label")
-    # label_df.columns = ["label"]
-
-    # pred_label = pd.concat([label_df, pred_df], axis=1, sort=True).reindex(label_df.index)
-    # analysis_position.score_ic_graph(pred_label)
-
-    # analysis_model.model_performance_graph(pred_label)
+if __name__ == "__main__":
+    freq_lst = ["day", "720min", "240min", "60min", "30min", "15min"]
+    _freq_lst = ["1day", "720min", "240min", "60min", "30min", "15min"]
+    for freq, _freq in zip(freq_lst, _freq_lst):
+        main(freq, _freq)
