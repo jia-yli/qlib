@@ -323,10 +323,10 @@ class SigAnaRecord(ACRecordTemp):
             return
         ic, ric = calc_ic(pred.iloc[:, 0], label.iloc[:, self.label_col])
         metrics = {
-            "IC": ic.mean(),
-            "ICIR": ic.mean() / ic.std(),
-            "Rank IC": ric.mean(),
-            "Rank ICIR": ric.mean() / ric.std(),
+            "ic": ic.mean(),
+            "icir": ic.mean() / ic.std(),
+            "rank_ic": ric.mean(),
+            "rank_icir": ric.mean() / ric.std(),
         }
         objects = {"ic.pkl": ic, "ric.pkl": ric}
         if self.ana_long_short:
@@ -505,6 +505,18 @@ class PortAnaRecord(ACRecordTemp):
                 analysis['return_with_cost'] = risk_analysis(report_normal["return"]-report_normal["cost"], N=self.N, mode="product")
                 analysis['fit_capm'] = fit_capm(report_normal["return"]-report_normal["cost"], report_normal["bench"], N=self.N, r_f_annual=2e-2)
 
+                metrics = {
+                    'bench_annualized_return': analysis['bench'].loc['annualized_return', 'risk'],
+                    'bench_information_ratio': analysis['bench'].loc['information_ratio', 'risk'],
+                    'bench_max_drawdown': analysis['bench'].loc['max_drawdown', 'risk'],
+                    'annualized_return': analysis['return_with_cost'].loc['annualized_return', 'risk'],
+                    'information_ratio': analysis['return_with_cost'].loc['information_ratio', 'risk'],
+                    'max_drawdown': analysis['return_with_cost'].loc['max_drawdown', 'risk'],
+                    'capm_alpha': analysis['fit_capm'].loc['alpha', 'CAPM'],
+                    'capm_beta': analysis['fit_capm'].loc['beta', 'CAPM'],
+                    'capm_alpha_annual': analysis['fit_capm'].loc['alpha_annual', 'CAPM'],
+                }
+                self.recorder.log_metrics(**metrics)
                 # save results
                 artifact_objects.update({f"port_analysis_{_analysis_freq}.pkl": analysis})
                 # print out results

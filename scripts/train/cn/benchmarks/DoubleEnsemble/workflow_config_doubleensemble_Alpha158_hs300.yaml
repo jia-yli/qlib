@@ -1,0 +1,70 @@
+data_handler_config: &data_handler_config
+  start_time: {{train_start}}
+  end_time: {{test_end}}
+  fit_start_time: {{train_start}}
+  fit_end_time: {{train_end}}
+  instruments: {{market}}
+
+task:
+  model:
+    class: DEnsembleModel
+    module_path: qlib.contrib.model.double_ensemble
+    kwargs:
+      base_model: "gbm"
+      loss: mse
+      num_models: 6
+      enable_sr: True
+      enable_fs: True
+      alpha1: 1
+      alpha2: 1
+      bins_sr: 10
+      bins_fs: 5
+      decay: 0.5
+      sample_ratios:
+        - 0.8
+        - 0.7
+        - 0.6
+        - 0.5
+        - 0.4
+      sub_weights:
+        - 1
+        - 0.2
+        - 0.2
+        - 0.2
+        - 0.2
+        - 0.2
+      epochs: 28
+      colsample_bytree: 0.8879
+      learning_rate: 0.2
+      subsample: 0.8789
+      lambda_l1: 205.6999
+      lambda_l2: 580.9768
+      max_depth: 8
+      num_leaves: 210
+      num_threads: 20
+      verbosity: -1
+  dataset:
+    class: DatasetH
+    module_path: qlib.data.dataset
+    kwargs:
+      handler:
+        class: Alpha158
+        module_path: qlib.contrib.data.handler
+        kwargs: *data_handler_config
+      segments:
+        train: [{{train_start}}, {{train_end}}]
+        valid: [{{valid_start}}, {{valid_end}}]
+        test:  [{{test_start}},  {{test_end}} ]
+  record: 
+    - class: SignalRecord
+      module_path: qlib.workflow.record_temp
+      kwargs: 
+        model: <MODEL>
+        dataset: <DATASET>
+    - class: SigAnaRecord
+      module_path: qlib.workflow.record_temp
+    - class: PortAnaRecord
+      module_path: qlib.workflow.record_temp
+      kwargs: 
+        config: {{port_analysis_config}}
+        N: {{steps_per_year}}
