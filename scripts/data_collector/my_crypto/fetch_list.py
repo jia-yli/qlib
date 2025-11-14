@@ -325,11 +325,22 @@ def extract_enlisted_regions(enlisted_state):
   )
   return enlisted_regions
 
+def extract_enlisted_state(enlisted_regions, date_range, symbols):
+  enlisted_state = pd.DataFrame(False, index=date_range, columns=symbols)
+  for _, row in enlisted_regions.iterrows():
+    symbol = row['symbol']
+    start = row['enlisted_region_start']
+    end_incl = row['enlisted_region_end_incl']
+    enlisted_state.loc[start:end_incl, symbol] = True
+  return enlisted_state
+
 def synthesize_custom_index(klines, weight, date_range):
+  assert weight.index[0] == date_range[0] and weight.index[-1] <= date_range[-1]
   # normalize
+  weight = weight.fillna(0)
   weight = weight.loc[:, (weight > 0).any()]
   weight = weight.div(weight.sum(axis=1), axis=0).fillna(0)
-  weight = weight.reindex(date_range, method="ffill").fillna(0)
+
   # results
   open_price_mult_lst    = []
   high_price_mult_lst    = []
@@ -400,26 +411,44 @@ def synthesize_custom_index(klines, weight, date_range):
   taker_vwap_mult    = pd.concat(taker_vwap_mult_lst   , axis=1)
   taker_quote_volume = pd.concat(taker_quote_volume_lst, axis=1)
 
-  # aggregate by weight
-  open_price_mult    = (open_price_mult    * weight).sum(axis=1)
-  high_price_mult    = (high_price_mult    * weight).sum(axis=1)
-  low_price_mult     = (low_price_mult     * weight).sum(axis=1)
-  close_price_mult   = (close_price_mult   * weight).sum(axis=1)
-  vwap_mult          = (vwap_mult          * weight).sum(axis=1)
-  quote_volume       = (quote_volume       * weight).sum(axis=1)
-  num_trades         = (num_trades         * weight).sum(axis=1)
-  taker_vwap_mult    = (taker_vwap_mult    * weight).sum(axis=1)
-  taker_quote_volume = (taker_quote_volume * weight).sum(axis=1)
-
+  close_price = []
+  adj_weight = []
   index_init_value = 100
-  close_price = index_init_value * (1 + close_price_mult).cumprod()
+  index_current_value = index_init_value
+  for i in range(len(weight)):
+    start_date = weight.index[i]
+    end_date = weight.index[i + 1] if i + 1 < len(weight) else None
+    weight_slice = weight.iloc[i:i+1]
+
+    close_price_mult_slice = close_price_mult.loc[(close_price_mult.index >= start_date) & ((close_price_mult.index < end_date) if end_date is not None else True)]
+    close_price_change_slice = (1 + close_price_mult_slice).cumprod() - 1 # ratio to the ref point
+    close_price_slice = index_current_value * (1 + (weight_slice.reindex(close_price_change_slice.index, method='ffill') * close_price_change_slice).sum(axis=1))
+    adj_weight_slice = weight_slice.reindex(close_price_change_slice.index, method='ffill') * (1 + close_price_change_slice)
+    adj_weight_slice = adj_weight_slice.div(adj_weight_slice.sum(axis=1), axis=0).fillna(0)
+    close_price.append(close_price_slice)
+    adj_weight.append(adj_weight_slice)
+    index_current_value = close_price_slice.iloc[-1]
+
+  close_price = pd.concat(close_price)
+  adj_weight = pd.concat(adj_weight)
+
   previous_close = close_price.shift(1, fill_value=index_init_value)
 
-  open_price  = previous_close * (1 + open_price_mult )
-  high_price  = previous_close * (1 + high_price_mult )
-  low_price   = previous_close * (1 + low_price_mult  )
-  vwap        = previous_close * (1 + vwap_mult       )
-  taker_vwap  = previous_close * (1 + taker_vwap_mult )
+  # aggregate by weight
+  open_price_mult    = (open_price_mult    * adj_weight).sum(axis=1)
+  high_price_mult    = (high_price_mult    * adj_weight).sum(axis=1)
+  low_price_mult     = (low_price_mult     * adj_weight).sum(axis=1)
+  vwap_mult          = (vwap_mult          * adj_weight).sum(axis=1)
+  quote_volume       = (quote_volume       * adj_weight).sum(axis=1)
+  num_trades         = (num_trades         * adj_weight).sum(axis=1)
+  taker_vwap_mult    = (taker_vwap_mult    * adj_weight).sum(axis=1)
+  taker_quote_volume = (taker_quote_volume * adj_weight).sum(axis=1)
+
+  open_price  = previous_close * (1 + open_price_mult)
+  high_price  = previous_close * (1 + high_price_mult)
+  low_price   = previous_close * (1 + low_price_mult )
+  vwap        = previous_close * (1 + vwap_mult      )
+  taker_vwap  = previous_close * (1 + taker_vwap_mult)
 
   base_volume = quote_volume / vwap
   taker_base_volume = taker_quote_volume / taker_vwap
@@ -537,27 +566,45 @@ if __name__ == "__main__":
   # exit_condition = exit_condition.reindex(reconstitution_dates)
 
   # enlisted_state = get_enlisted_state(enter_condition, exit_condition)
-  # enlisted_state.to_feather(workspace_path / f"enlisted_state.feather")
-
-  # enlisted_regions = extract_enlisted_regions(enlisted_state)
-  # enlisted_regions["enlisted_region_end"] = enlisted_regions["enlisted_region_end_incl"] + pd.offsets.MonthBegin(1)
-  # enlisted_regions.to_feather(workspace_path / f"enlisted_regions.feather")
+  # enlisted_state.to_feather(instrument_list_save_path / f"enlisted_state.feather")
 
   # # weight
   # # volume weighted
   # volume_df = pd.concat({sym: df['quote_volume'] for sym, df in trade_symbol_klines.items()}, axis=1).sort_index()
   # weight_volume = volume_df.shift(1).rolling(30).mean().reindex(enlisted_state.index).fillna(0)
   # weight_volume = weight_volume * enlisted_state
-  # weight_volume.to_feather(workspace_path / f"weight_volume.feather")
+  # weight_volume.to_feather(instrument_list_save_path / f"weight_volume.feather")
 
   # # equal weighted
   # weight_equal = enlisted_state.astype(float)
-  # weight_equal.to_feather(workspace_path / f"weight_equal.feather")
-  
+  # weight_equal.to_feather(instrument_list_save_path / f"weight_equal.feather")
+
+  # # top-N
+  # volume_df = pd.concat({sym: df['quote_volume'] for sym, df in trade_symbol_klines.items()}, axis=1).sort_index()
+  # volume_score = volume_df.shift(1).rolling(90).mean().reindex(enlisted_state.index).fillna(0) * enlisted_state
+
+  # mask_top50  = volume_score.apply(lambda row: (row >= row.nlargest(50).min()) & (row > 0), axis=1)
+  # mask_top200 = volume_score.apply(lambda row: (row >= row.nlargest(200).min()) & (row > 0), axis=1)
+  # mask_mid150 = mask_top200 & (~mask_top50)
+
+  # enlisted_state_top50  = mask_top50  & enlisted_state
+  # enlisted_state_top200 = mask_top200 & enlisted_state
+  # enlisted_state_mid150 = mask_mid150 & enlisted_state
+
+  # for suffix in ['top50', 'top200', 'mid150']:
+  #   eval(f"enlisted_state_{suffix}").to_feather(instrument_list_save_path / f"enlisted_state_{suffix}.feather")
+
+  #   weight_volume = volume_score * eval(f"enlisted_state_{suffix}")
+  #   weight_volume.to_feather(instrument_list_save_path / f"weight_volume_{suffix}.feather")
+
+  #   # equal weighted
+  #   weight_equal = eval(f"enlisted_state_{suffix}").astype(float)
+  #   weight_equal.to_feather(instrument_list_save_path / f"weight_equal_{suffix}.feather")
+
   '''
   5. Fetch 15min Kline
   '''
-  # enlisted_state = pd.read_feather(workspace_path / f"enlisted_state.feather")
+  # enlisted_state = pd.read_feather(instrument_list_save_path / f"enlisted_state.feather")
   # trade_symbols = enlisted_state.loc[:, enlisted_state.any()].columns
   # for trade_symbol in trade_symbols:
   #   df = get_kline_data(trade_symbol, '15m', start_time, end_time)
@@ -567,9 +614,9 @@ if __name__ == "__main__":
   '''
   6. Resample & Make Dump-Ready
   '''
-  enlisted_state = pd.read_feather(workspace_path / f"enlisted_state.feather")
-  weight_volume = pd.read_feather(workspace_path / f"weight_volume.feather")
-  weight_equal = pd.read_feather(workspace_path / f"weight_equal.feather")
+  enlisted_state = pd.read_feather(instrument_list_save_path / f"enlisted_state.feather")
+  weight_volume = pd.read_feather(instrument_list_save_path / f"weight_volume.feather")
+  weight_equal = pd.read_feather(instrument_list_save_path / f"weight_equal.feather")
 
   enlisted_regions = extract_enlisted_regions(enlisted_state)
   enlisted_regions["enlisted_region_end"] = enlisted_regions["enlisted_region_end_incl"] + pd.offsets.MonthBegin(1)
@@ -588,7 +635,40 @@ if __name__ == "__main__":
     ).to_csv(
       resample_freq_instruments_save_path / "my_universe.txt", sep='\t', index=False, header=False
     )
+  
+  # (extract_enlisted_state(enlisted_regions, enlisted_state.index, enlisted_state.columns) == enlisted_state).all().all()
+  
+  suffix_index_info = {}
+  for suffix in ['top50', 'top200', 'mid150']:
+    enlisted_state_suffix = pd.read_feather(instrument_list_save_path / f"enlisted_state_{suffix}.feather")
+    weight_volume_suffix = pd.read_feather(instrument_list_save_path / f"weight_volume_{suffix}.feather")
+    weight_equal_suffix = pd.read_feather(instrument_list_save_path / f"weight_equal_{suffix}.feather")
+    enlisted_regions_suffix = extract_enlisted_regions(enlisted_state_suffix)
+    enlisted_regions_suffix["enlisted_region_end"] = enlisted_regions_suffix["enlisted_region_end_incl"] + pd.offsets.MonthBegin(1)
+    # (extract_enlisted_state(enlisted_regions_suffix, enlisted_state_suffix.index, enlisted_state_suffix.columns) == enlisted_state_suffix).all().all()
 
+    suffix_index_info[suffix] = {
+      'enlisted_state': enlisted_state_suffix,
+      'weight_volume': weight_volume_suffix,
+      'weight_equal' : weight_equal_suffix ,
+    }
+
+    for resample_freq in resample_freq_lst:
+      resample_freq_instruments_save_path = resampled_kline_path / resample_freq / "instruments"
+      resample_freq_instruments_save_path.mkdir(parents=True, exist_ok=True)
+      # universe
+      pd.concat(
+        [
+          enlisted_regions_suffix['symbol'],
+          enlisted_regions_suffix['enlisted_region_start'].dt.strftime("%Y-%m-%d %H:%M:%S"),
+          (enlisted_regions_suffix['enlisted_region_end'] - pd.to_timedelta(resample_freq)).dt.strftime("%Y-%m-%d %H:%M:%S"),
+        ],
+        axis=1,
+      ).to_csv(
+        resample_freq_instruments_save_path / f"my_universe_{suffix}.txt", sep='\t', index=False, header=False
+      )
+
+  logger.info("Loading all raw klines ......")
   trade_symbols = enlisted_state.columns[enlisted_state.any()]
   trade_symbol_klines = {}
   for trade_symbol in trade_symbols:
@@ -597,6 +677,7 @@ if __name__ == "__main__":
     trade_symbol_klines[trade_symbol] = kline_df
 
   for resample_freq in resample_freq_lst:
+    logger.info(f"Resampling to {resample_freq} ......")
     resample_freq_save_path = resampled_kline_path / resample_freq
     resample_freq_save_path.mkdir(parents=True, exist_ok=True)
 
@@ -608,13 +689,32 @@ if __name__ == "__main__":
       resampled_klines[trade_symbol] = resampled_kline
 
     # index
-    custom_index_volume = synthesize_custom_index(resampled_klines, weight_volume, pd.date_range(start_time, end_time, freq=resample_freq, inclusive="left"))
-    custom_index_equal  = synthesize_custom_index(resampled_klines, weight_equal, pd.date_range(start_time, end_time, freq=resample_freq, inclusive="left"))
+    logger.info(f"Synthesizing custom index for {resample_freq} ......")
+    resampled_klines["MYINDEXVOL"] = synthesize_custom_index(
+      resampled_klines, 
+      weight_volume, 
+      pd.date_range(start_time, end_time, freq=resample_freq, inclusive="left")
+    )
+    resampled_klines["MYINDEXEQ" ] = synthesize_custom_index(
+      resampled_klines, 
+      weight_equal, 
+      pd.date_range(start_time, end_time, freq=resample_freq, inclusive="left")
+    )
 
-    resampled_klines["MYINDEXVOL"] = custom_index_volume
-    resampled_klines["MYINDEXEQ" ] = custom_index_equal 
+    for suffix in suffix_index_info.keys():
+      resampled_klines[f"MYINDEXVOL{suffix.upper()}"] = synthesize_custom_index(
+        resampled_klines, 
+        suffix_index_info[suffix]['weight_volume'], 
+        pd.date_range(start_time, end_time, freq=resample_freq, inclusive="left")
+      )
+      resampled_klines[f"MYINDEXEQ{suffix.upper()}"] = synthesize_custom_index(
+        resampled_klines, 
+        suffix_index_info[suffix]['weight_equal'], 
+        pd.date_range(start_time, end_time, freq=resample_freq, inclusive="left")
+      )
 
-    for trade_symbol in trade_symbols:
+    logger.info(f"Saving resampled klines for {resample_freq} ......")
+    for trade_symbol in resampled_klines.keys():
       kline = resampled_klines[trade_symbol]
       kline = kline.rename(
         columns = {
