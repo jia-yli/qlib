@@ -47,28 +47,24 @@ def compare_df(di, dj, eps=1e-12):
   for idx in diff_row_indices:
     print(f"{idx}")
 
-dataset_paths = [
-  "/capstor/scratch/cscs/ljiayong/datasets/qlib/cn_my_baostock/bin", # start 2020, original
-  "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/test_original/bin", 
-  "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/test_resampled/bin",
-  "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/test_droped/bin",
-]
-freq = "day"
-_freq = "1day"
-deal_price = "close"
-market = "hs300" # sz50, hs300, zz500
-benchmark = "SH000300" # SH000016, SH000300, SH000905
-train_split = ("2020-01-01", "2022-12-31")
-valid_split = ("2023-01-01", "2023-12-31")
-test_split  = ("2024-01-01", "2025-09-29")
+if __name__ == "__main__":
+  # config
+  provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/bin" # = resampled
+  market = "hs300" # sz50, hs300, zz500
+  benchmark = "SH000300" # SH000016, SH000300, SH000905
+  deal_price = "close"
+  freq = "1d"
+  assert int(pd.to_timedelta("1day") / pd.to_timedelta(freq)) == 1, "Only support daily frequency now."
+  steps_per_year = 246 
 
-def get_score(provider_uri):
-  qlib.init(provider_uri=provider_uri, region=REG_CN)
-  score = D.features(D.instruments(market=market), ["$close/Ref($close, 1) - 1"], start_time=test_split[0], end_time=test_split[1])
-  return score
+  train_split = ("2020-01-01", "2022-12-31")
+  valid_split = ("2023-01-01", "2023-12-31")
+  test_split  = ("2024-01-01", "2025-09-29")
 
-def run_eval(score, provider_uri):
+  factor = "$close/Ref($close, 1) - 1"
+
   qlib.init(provider_uri=provider_uri, region=REG_CN)
+  score = D.features(D.instruments(market=market), [factor], start_time=test_split[0], end_time=test_split[1])
 
   signal = score.iloc[:, 0]
   port_analysis_config = {
@@ -76,17 +72,17 @@ def run_eval(score, provider_uri):
       "class": "SimulatorExecutor",
       "module_path": "qlib.backtest.executor",
       "kwargs": {
-        "time_per_step": freq,
+        "time_per_step": "day" if freq == "1d" else freq,
         "generate_portfolio_metrics": True,
       },
     },
     "strategy": {
       "class": "TopkDropoutStrategy",
-      "module_path": "qlib.contrib.strategy.signal_strategy",
+      "module_path": "qlib.contrib.strategy",
       "kwargs": {
         "signal": signal,
-        "topk": 20,
-        "n_drop": 2,
+        "topk": 50,
+        "n_drop": 5,
       },
     },
     "backtest": {
@@ -95,7 +91,7 @@ def run_eval(score, provider_uri):
       "account": 1_000_000,
       "benchmark": benchmark,
       "exchange_kwargs": {
-        "freq": freq,
+        "freq": "day" if freq == "1d" else freq,
         "trade_unit": 100,
         "limit_threshold": 0.095,
         "deal_price": deal_price,
@@ -107,25 +103,12 @@ def run_eval(score, provider_uri):
   }
 
   portfolio_metric_dict, indicator_dict = backtest(executor=port_analysis_config["executor"], strategy=port_analysis_config["strategy"], **port_analysis_config["backtest"])
-  report = portfolio_metric_dict[_freq][0]
-  position = portfolio_metric_dict[_freq][1]
-  indicator = indicator_dict[_freq]
-  print(risk_analysis(report["bench"], N=246, mode="product"))
-  print(risk_analysis(report["return"]-report["cost"], N=246, mode="product"))
-  print(fit_capm(report["return"]-report["cost"], report["bench"], N=246, r_f_annual=2e-2))
-  analysis_position.report_graph(report, show_notebook=False, save_path="./scripts/train/cn")
+  report = portfolio_metric_dict["1day" if freq == "1d" else freq][0]
+  position = portfolio_metric_dict["1day" if freq == "1d" else freq][1]
+  indicator = indicator_dict["1day" if freq == "1d" else freq]
+  print(risk_analysis(report["bench"], N=steps_per_year, mode="product"))
+  print(risk_analysis(report["return"]-report["cost"], N=steps_per_year, mode="product"))
+  print(fit_capm(report["return"]-report["cost"], report["bench"], N=steps_per_year, r_f_annual=2e-2))
+  analysis_position.report_graph(report, show_notebook=False, save_path=f"./scripts/train/cn/{market}/{freq}/factor")
 
-
-
-scores = []
-for provider_uri in dataset_paths[:1]:
-  score = get_score(provider_uri)
-  scores.append(score)
-  # import pdb;pdb.set_trace()
-  # if len(scores) > 1:
-  #   compare_df(score, scores[0])
-
-for score in scores[:1]:
-  for provider_uri in dataset_paths[:1]:
-    run_eval(score, provider_uri)
 

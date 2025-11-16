@@ -12,20 +12,24 @@ from qlib.constant import REG_CN
 from qlib.workflow import R
 from qlib.contrib.report import analysis_position
 
-def main(output_dir="./scripts/train/cn/results", experiment_name="workflow", uri_folder="mlruns"):
-  output_path = Path(output_dir)
-  output_path.mkdir(exist_ok=True)
+def main(experiment_name="workflow"):
+  data_handler = "Alpha158"
+  market = "hs300" # sz50, hs300, zz500
+  freq = "1d"
+
+  output_path = Path("/users/ljiayong/projects/qlib/scripts/train/cn") / f"{market}_{data_handler}_test_run_results" / f"{freq}"
+  output_path.mkdir(parents=True, exist_ok=True)
  
   # Initialize qlib
   qlib.init(
-    provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/cn_my_baostock/bin",
+    provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/bin",
     region = REG_CN,
     exp_manager={
       "class": "MLflowExpManager",
       "module_path": "qlib.workflow.expm",
       "kwargs": {
-        "uri": "file://" + str(Path("/users/ljiayong/projects/qlib/scripts/train/cn") / uri_folder),
-        "default_exp_name": "Experiment",
+        "uri": "file://" + str(Path("/users/ljiayong/projects/qlib/scripts/train/cn") / f"{market}_{data_handler}_test_run" / f"{freq}"),
+        "default_exp_name": "default_experiment",
       },
     }
   )
@@ -68,7 +72,7 @@ def main(output_dir="./scripts/train/cn/results", experiment_name="workflow", ur
 
     metrics_to_collect = [
       "ic", "icir", "rank_ic", "rank_icir", 
-      "return_with_cost_annualized_return", "return_with_cost_information_ratio", "return_with_cost_max_drawdown"
+      "annualized_return", "excess_annualized_return", "information_ratio", "max_drawdown"
     ]
     print(f"Metrics available: {metrics.keys()}")
     print(f"Using metrics for results: {metrics_to_collect}")

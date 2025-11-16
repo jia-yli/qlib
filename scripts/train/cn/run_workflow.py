@@ -12,15 +12,16 @@ from qlib.contrib.report import analysis_position
 if __name__ == "__main__":
   # config
   provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/bin" # = resampled
-  freq = "day"
-  _freq = "1day"
-  deal_price = "close"
   market = "hs300" # sz50, hs300, zz500
   benchmark = "SH000300" # SH000016, SH000300, SH000905
+  deal_price = "close"
+  freq = "1d"
+  assert int(pd.to_timedelta("1day") / pd.to_timedelta(freq)) == 1, "Only support daily frequency now."
+  steps_per_year = 246 
+
   train_split = ("2020-01-01", "2022-12-31")
   valid_split = ("2023-01-01", "2023-12-31")
   test_split  = ("2024-01-01", "2025-09-29")
-
 
   qlib.init(provider_uri=provider_uri, region=REG_CN)
   utc_timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -34,7 +35,7 @@ if __name__ == "__main__":
     "fit_start_time": train_split[0],
     "fit_end_time": train_split[1],
     "instruments": market,
-    "freq": freq,
+    "freq": "day" if freq == "1d" else freq,
     "label": [[f"Ref(${deal_price}, -2)/Ref(${deal_price}, -1) - 1"], ["LABEL0"]]
   }
 
@@ -44,13 +45,13 @@ if __name__ == "__main__":
       "module_path": "qlib.contrib.model.gbdt",
       "kwargs": {
         "loss": "mse",
-        "colsample_bytree": 0.8879,
-        "learning_rate": 0.0421,
-        "subsample": 0.8789,
+        "colsample_bytree": 0.9,
+        "learning_rate": 0.1,
+        "subsample": 0.9,
         "lambda_l1": 205.6999,
         "lambda_l2": 580.9768,
         "max_depth": 8,
-        "num_leaves": 210,
+        "num_leaves": 250,
         "num_threads": 20,
       },
     },
@@ -80,17 +81,17 @@ if __name__ == "__main__":
       "class": "SimulatorExecutor",
       "module_path": "qlib.backtest.executor",
       "kwargs": {
-        "time_per_step": freq,
+        "time_per_step": "day" if freq == "1d" else freq,
         "generate_portfolio_metrics": True,
       },
     },
     "strategy": {
       "class": "TopkDropoutStrategy",
-      "module_path": "qlib.contrib.strategy.signal_strategy",
+      "module_path": "qlib.contrib.strategy",
       "kwargs": {
         "signal": (model, dataset),
-        "topk": 20,
-        "n_drop": 2,
+        "topk": 50,
+        "n_drop": 5,
       },
     },
     "backtest": {
@@ -99,7 +100,7 @@ if __name__ == "__main__":
       "account": 1_000_000,
       "benchmark": benchmark,
       "exchange_kwargs": {
-        "freq": freq,
+        "freq": "day" if freq == "1d" else freq,
         "trade_unit": 100,
         "limit_threshold": 0.095,
         "deal_price": deal_price,
@@ -128,14 +129,14 @@ if __name__ == "__main__":
     sar.generate()
 
     # backtest & analysis
-    par = PortAnaRecord(recorder, config=port_analysis_config, N=246, risk_analysis_freq=freq)
+    par = PortAnaRecord(recorder, config=port_analysis_config, N=steps_per_year, risk_analysis_freq="day" if freq == "1d" else freq)
     par.generate()
 
   recorder = R.get_recorder(recorder_id=rid, experiment_name="workflow")
 
   pred_df = recorder.load_object("pred.pkl")
-  report_normal_df = recorder.load_object(f"portfolio_analysis/report_normal_{_freq}.pkl")
-  positions = recorder.load_object(f"portfolio_analysis/positions_normal_{_freq}.pkl")
-  analysis_df = recorder.load_object(f"portfolio_analysis/port_analysis_{_freq}.pkl")
+  report_normal_df = recorder.load_object(f"portfolio_analysis/report_normal_{'1day' if freq == '1d' else freq}.pkl")
+  positions = recorder.load_object(f"portfolio_analysis/positions_normal_{'1day' if freq == '1d' else freq}.pkl")
+  analysis_df = recorder.load_object(f"portfolio_analysis/port_analysis_{'1day' if freq == '1d' else freq}.pkl")
 
-  analysis_position.report_graph(report_normal_df, show_notebook=False, save_path=f"./scripts/train/cn/{_freq}")
+  analysis_position.report_graph(report_normal_df, show_notebook=False, save_path=f"./scripts/train/cn/{market}/{freq}/workflow")
