@@ -157,7 +157,7 @@ def generate_config(base_config, config):
 
 def run_config(config, experiment_name):
   qlib.init(**config["qlib_init"])
-  recorder = task_train(config.get("task"), experiment_name=experiment_name)
+  recorder = task_train(config["task"], experiment_name=experiment_name)
   recorder.save_objects(config=config)
 
 def run(experiment_name="workflow"):
@@ -169,7 +169,7 @@ def run(experiment_name="workflow"):
   freq = "1d"
 
   base_config = {
-    "exp_manager_uri": "file://" + str(Path("/users/ljiayong/projects/qlib/scripts/train/cn") / f"{market}_{data_handler}_test_run" / f"{freq}"),
+    "exp_manager_uri": "file:///" + str(Path("/users/ljiayong/projects/qlib/scripts/train/cn") / f"{market}_{data_handler}_test_run" / f"{freq}"),
     "market":     market,
     "benchmark":  benchmark,
     "deal_price": deal_price,

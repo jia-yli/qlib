@@ -178,7 +178,7 @@ def run(experiment_name="workflow"):
   deal_price = 'open'
 
   base_config = {
-    "exp_manager_uri": "file://" + str(Path("/users/ljiayong/projects/qlib/scripts/train/crypto") / f"{market}_{data_handler}_test_run" / f"{freq}"),
+    "exp_manager_uri": "file:///" + str(Path("/users/ljiayong/projects/qlib/scripts/train/crypto") / f"{market}_{data_handler}_test_run" / f"{freq}"),
     "market":     market,
     "benchmark":  benchmark,
     "deal_price": deal_price,

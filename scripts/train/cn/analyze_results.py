@@ -28,7 +28,7 @@ def main(experiment_name="workflow"):
       "class": "MLflowExpManager",
       "module_path": "qlib.workflow.expm",
       "kwargs": {
-        "uri": "file://" + str(Path("/users/ljiayong/projects/qlib/scripts/train/cn") / f"{market}_{data_handler}_test_run" / f"{freq}"),
+        "uri": "file:///" + str(Path("/users/ljiayong/projects/qlib/scripts/train/cn") / f"{market}_{data_handler}_test_run" / f"{freq}"),
         "default_exp_name": "default_experiment",
       },
     }

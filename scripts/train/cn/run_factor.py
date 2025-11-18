@@ -49,7 +49,7 @@ def compare_df(di, dj, eps=1e-12):
 
 if __name__ == "__main__":
   # config
-  provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/bin" # = resampled
+  provider_uri = "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/bin"
   market = "hs300" # sz50, hs300, zz500
   benchmark = "SH000300" # SH000016, SH000300, SH000905
   deal_price = "close"

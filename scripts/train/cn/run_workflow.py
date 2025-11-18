@@ -26,7 +26,7 @@ if __name__ == "__main__":
   qlib.init(provider_uri=provider_uri, region=REG_CN)
   utc_timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
   mlrun_path = f"/capstor/scratch/cscs/ljiayong/workspace/qlib/mlruns/{utc_timestamp}"
-  mlrun_uri = f"file://{mlrun_path}"
+  mlrun_uri = f"file:///{mlrun_path}"
   R.set_uri(mlrun_uri)
 
   data_handler_config = {

@@ -510,6 +510,7 @@ class PortAnaRecord(ACRecordTemp):
                     'bench_information_ratio': analysis['bench'].loc['information_ratio', 'risk'],
                     'bench_max_drawdown': analysis['bench'].loc['max_drawdown', 'risk'],
                     'annualized_return': analysis['return_with_cost'].loc['annualized_return', 'risk'],
+                    'excess_annualized_return': analysis['return_with_cost'].loc['annualized_return', 'risk'] - analysis['bench'].loc['annualized_return', 'risk'],
                     'information_ratio': analysis['return_with_cost'].loc['information_ratio', 'risk'],
                     'max_drawdown': analysis['return_with_cost'].loc['max_drawdown', 'risk'],
                     'capm_alpha': analysis['fit_capm'].loc['alpha', 'CAPM'],
@@ -524,6 +525,7 @@ class PortAnaRecord(ACRecordTemp):
                 pprint(analysis['bench'])
                 pprint(f"The following are analysis results of the return with cost({_analysis_freq}).")
                 pprint(analysis['return_with_cost'])
+                pprint(f"Excess annualized return: {metrics['excess_annualized_return']}")
                 pprint(f"The following are analysis results of the capm fitting({_analysis_freq}).")
                 pprint(analysis['fit_capm'])
 
