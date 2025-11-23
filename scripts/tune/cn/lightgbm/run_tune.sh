@@ -7,7 +7,7 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 NUM_WORKERS=4
 
 UTC_TIMESTAMP="$(date --utc +'%Y%m%d_%H%M%S')"
-LOG_DIR="$SCRIPT_DIR/logs_${UTC_TIMESTAMP}_utc"
+LOG_DIR="$SCRIPT_DIR/logs/logs_${UTC_TIMESTAMP}_utc"
 mkdir -p "$LOG_DIR"
 
 echo "[${UTC_TIMESTAMP} UTC] Launching $NUM_WORKERS workers. Logs in: $LOG_DIR"

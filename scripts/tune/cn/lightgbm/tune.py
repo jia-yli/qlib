@@ -1,4 +1,5 @@
 import os
+import copy
 import fire
 import qlib
 import optuna
@@ -11,10 +12,13 @@ from filelock import FileLock
 
 import qlib
 from qlib.constant import REG_CN
-from qlib.utils import init_instance_by_config, flatten_dict
+from qlib.utils import init_instance_by_config, flatten_dict, fill_placeholder, class_casting
 from qlib.workflow import R
-from qlib.workflow.record_temp import SignalRecord, PortAnaRecord, SigAnaRecord
-from qlib.contrib.report import analysis_position
+from qlib.backtest import backtest
+from qlib.data.dataset import DatasetH
+from qlib.data.dataset.handler import DataHandlerLP
+from qlib.contrib.eva.alpha import calc_ic
+from qlib.contrib.evaluate import risk_analysis, fit_capm
 
 def generate_config(base_config, config):
   # parse base config
@@ -105,6 +109,14 @@ def generate_config(base_config, config):
   record
   '''
   port_analysis_config = {
+    "executor": {
+      "class": "SimulatorExecutor",
+      "module_path": "qlib.backtest.executor",
+      "kwargs": {
+        "time_per_step": "day" if freq == "1d" else freq,
+        "generate_portfolio_metrics": True,
+      },
+    },
     "strategy": {
       "class": "TopkDropoutStrategy",
       "module_path": "qlib.contrib.strategy",
@@ -115,8 +127,8 @@ def generate_config(base_config, config):
       }
     },
     "backtest": {
-      "start_time": test_start,
-      "end_time": test_end,
+      "start_time": "<BACKTEST_START>",
+      "end_time": "<BACKTEST_END>",
       "account": 1_000_000,
       "benchmark": benchmark,
       "exchange_kwargs": {
@@ -182,69 +194,105 @@ def suggest_config(trial, base_config):
   )
   return config
 
-def run_config(config, experiment_name):
-  freq  = config["base"]["freq"]
-  qlib.init(**config["qlib_init"])
-  model = init_instance_by_config(config["task"]["model"])
-  dataset = init_instance_by_config(config["task"]["dataset"])
+def run_eval(model, dataset, segment, recorder, config):
+  base_config = config["base"]
+  freq = base_config["freq"]
+  steps_per_year = config["task"]["steps_per_year"]
+  segment_start, segment_end = base_config[f"{segment}_split"]
+  metrics = dict()
+  # prediction
+  pred = model.predict(dataset, segment=segment)
+  assert isinstance(dataset, DatasetH)
+  with class_casting(dataset, DatasetH):
+    params = dict(segments=segment, col_set="label", data_key=DataHandlerLP.DK_R)
+    try:
+      # Assume the backend handler is DataHandlerLP
+      raw_label = dataset.prepare(**params)
+    except TypeError:
+      # The argument number is not right
+      del params["data_key"]
+      # The backend handler should be DataHandler
+      raw_label = dataset.prepare(**params)
 
-  # start exp
-  with R.start(experiment_name=experiment_name):
-    recorder = R.get_recorder()
-    rid = recorder.id
-    recorder.save_objects(config=config)
+  metrics.update({
+    f"l2_{segment}": ((pred - raw_label.iloc[:, 0]) ** 2).mean(),
+  })
 
-    # model training
-    evals_result = dict()
-    model.fit(dataset, evals_result=evals_result)
-    R.save_objects(**{"model.pkl": model, "evals_result.pkl": evals_result})
+  ic, ric = calc_ic(pred, raw_label.iloc[:, 0])
+  recorder.save_objects(**{f"ic_{segment}.pkl": ic, f"ric_{segment}.pkl": ric})
 
-    # prediction
-    sr = SignalRecord(model, dataset, recorder)
-    sr.generate()
+  metrics.update({
+    f"ic_{segment}": ic.mean(),
+    f"icir_{segment}": ic.mean() / ic.std(),
+    f"rank_ic_{segment}": ric.mean(),
+    f"rank_icir_{segment}": ric.mean() / ric.std(),
+  })
 
-    # Signal Analysis
-    sar = SigAnaRecord(recorder)
-    sar.generate()
+  # backtest
+  port_analysis_config = fill_placeholder(
+    copy.deepcopy(config["task"]["port_analysis_config"]), 
+    {
+      "<PRED>": pred,
+      "<BACKTEST_START>": segment_start,
+      "<BACKTEST_END>": segment_end,
+    }
+  )
+  portfolio_metric_dict, indicator_dict = backtest(executor=port_analysis_config["executor"], strategy=port_analysis_config["strategy"], **port_analysis_config["backtest"])
+  recorder.save_objects(**{f"portfolio_metric_{segment}.pkl": portfolio_metric_dict, f"indicator_{segment}.pkl": indicator_dict})
 
-    # backtest & analysis
-    par = PortAnaRecord(
-      recorder, 
-      config=config["task"]["port_analysis_config"], 
-      N=config["task"]["steps_per_year"], 
-      risk_analysis_freq="day" if freq == "1d" else freq
-    )
-    par.generate()
-  
-  return rid, experiment_name
+  report = portfolio_metric_dict["1day" if freq == "1d" else freq][0]
+  analysis = dict()
+  analysis['bench'] = risk_analysis(report["bench"], N=steps_per_year, mode="product")
+  analysis['return_with_cost'] = risk_analysis(report["return"]-report["cost"], N=steps_per_year, mode="product")
+  analysis['fit_capm'] = fit_capm(report["return"]-report["cost"], report["bench"], N=steps_per_year, r_f_annual=2e-2)
+
+  metrics.update({
+    f'bench_annualized_return_{segment}': analysis['bench'].loc['annualized_return', 'risk'],
+    f'bench_information_ratio_{segment}': analysis['bench'].loc['information_ratio', 'risk'],
+    f'bench_max_drawdown_{segment}': analysis['bench'].loc['max_drawdown', 'risk'],
+    f'annualized_return_{segment}': analysis['return_with_cost'].loc['annualized_return', 'risk'],
+    f'excess_annualized_return_{segment}': analysis['return_with_cost'].loc['annualized_return', 'risk'] - analysis['bench'].loc['annualized_return', 'risk'],
+    f'information_ratio_{segment}': analysis['return_with_cost'].loc['information_ratio', 'risk'],
+    f'max_drawdown_{segment}': analysis['return_with_cost'].loc['max_drawdown', 'risk'],
+    f'capm_alpha_{segment}': analysis['fit_capm'].loc['alpha', 'CAPM'],
+    f'capm_beta_{segment}': analysis['fit_capm'].loc['beta', 'CAPM'],
+    f'capm_alpha_annual_{segment}': analysis['fit_capm'].loc['alpha_annual', 'CAPM'],
+  })
+  recorder.save_objects(**{f"metrics_{segment}.pkl": metrics})
+  return metrics      
 
 def objective(trial, base_config):
   config = suggest_config(trial, base_config)
-  rid, experiment_name = run_config(config, experiment_name="tune")
 
-  freq = config["base"]["freq"]
-  steps_per_year = config["task"]["steps_per_year"]
+  base_config = config["base"]
+  freq = base_config["freq"]
 
-  recorder = R.get_recorder(recorder_id=rid, experiment_name=experiment_name)
+  qlib.init(**config["qlib_init"])
 
-  evals_result = recorder.load_object("evals_result.pkl")
-  report_normal_df = recorder.load_object(f"portfolio_analysis/report_normal_{'1day' if freq == '1d' else freq}.pkl")
-  positions = recorder.load_object(f"portfolio_analysis/positions_normal_{'1day' if freq == '1d' else freq}.pkl")
-  analysis = recorder.load_object(f"portfolio_analysis/port_analysis_{'1day' if freq == '1d' else freq}.pkl")
+  with R.start(experiment_name="tune"):
+    recorder = R.get_recorder()
+    rid = recorder.id
+    trial.set_user_attr("rid", rid)
 
-  # import pdb;pdb.set_trace()
-  # model.model.best_iteration
-  # model.model.curret_iteration()
-  valid_l2 = min(evals_result["valid"]["l2"])
-  trial.set_user_attr(f"valid_l2", min(evals_result["valid"]["l2"]))
-  trial.set_user_attr(f'test_annualized_return', analysis['return_with_cost'].loc['annualized_return', 'risk'])
-  trial.set_user_attr(
-    f'test_excess_annualized_return', 
-    analysis['return_with_cost'].loc['annualized_return', 'risk'] - analysis['bench'].loc['annualized_return', 'risk'],
-  )
-  trial.set_user_attr(f'test_information_ratio',analysis['return_with_cost'].loc['information_ratio', 'risk'])
-  trial.set_user_attr(f'test_max_drawdown',analysis['return_with_cost'].loc['max_drawdown', 'risk'])
-  return valid_l2
+    recorder.save_objects(**{"config.pkl": config})
+    # model training
+    model = init_instance_by_config(config["task"]["model"])
+    dataset = init_instance_by_config(config["task"]["dataset"])
+    evals_result = dict()
+    model.fit(dataset, evals_result=evals_result)
+    recorder.save_objects(**{"model.pkl": model, "evals_result.pkl": evals_result})
+
+    # evaluation: valid split
+    metrics_valid = run_eval(model, dataset, segment="valid", recorder=recorder, config=config)
+    # evaluation: test split
+    metrics_test  = run_eval(model, dataset, segment="test" , recorder=recorder, config=config)
+
+  metrics = metrics_valid | metrics_test
+
+  for key, value in metrics.items():
+    trial.set_user_attr(f"{key}", value)
+
+  return metrics["excess_annualized_return_valid"]
 
 
 if __name__ == "__main__":
@@ -276,7 +324,7 @@ if __name__ == "__main__":
     study = optuna.create_study(
       study_name=study_name, 
       storage=storage_uri, 
-      direction="minimize",
+      direction="maximize",
       load_if_exists=True,
     )
 
