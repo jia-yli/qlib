@@ -1,11 +1,7 @@
-image = "/capstor/scratch/cscs/ljiayong/enroot_images/qlib.sqsh"
+image = "/capstor/scratch/cscs/ljiayong/enroot_images/qlib_eiger.sqsh"
 mounts = ["/capstor/scratch/cscs/ljiayong:/capstor/scratch/cscs/ljiayong",
           "/iopsstor/scratch/cscs/ljiayong:/iopsstor/scratch/cscs/ljiayong",
           "/users/ljiayong/projects/qlib:/users/ljiayong/projects/qlib",
           ]
 workdir = "/users/ljiayong/projects/qlib"
 writable = true
-
-[env]
-NVIDIA_VISIBLE_DEVICES = "all"
-NVIDIA_DRIVER_CAPABILITIES = "compute,utility"
