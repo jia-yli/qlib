@@ -3,13 +3,13 @@
 #SBATCH --job-name=lightgbm-tune             # Job name
 #SBATCH --output=./slurm_out/job_%j_out.txt   # Output file (job ID and task number)
 #SBATCH --error=./slurm_out/job_%j_err.txt    # Error file (job ID and task number)
-#SBATCH --partition=debug                # Partitions to submit the job
+#SBATCH --partition=normal                # Partitions to submit the job
 #SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1                        # Number of tasks (1 for single task)
 #SBATCH --cpus-per-task=128               # Number of CPU cores per task
 #SBATCH --mem=384G                        # Memory allocation
 #SBATCH --gpus=4                          # Number of GPUs
-#SBATCH --time=1:30:00                    # Time limit
+#SBATCH --time=4:00:00                    # Time limit
 
 # Print detailed job metadata
 JOB_TIME_LIMIT=$(squeue -j $SLURM_JOB_ID -h --Format TimeLimit)
@@ -30,6 +30,12 @@ echo "Time Limit: $JOB_TIME_LIMIT"
 echo "Job Start Time: $CURRENT_TIMESTAMP_FULL"
 echo "==================================================="
 
+# sbatch --job-name=tune-single launch_tune.sbatch single
+
+SUFFIX="${1:-single}"
+
+echo "Launching tuning with suffix: $SUFFIX"
+
 ENV_VARS="
   export TQDM_MININTERVAL=120
   # export TQDM_DISABLE=1
@@ -39,6 +45,6 @@ srun --environment=/users/ljiayong/projects/qlib/docker/alps/clariden.toml bash 
   date --utc
   ${ENV_VARS}
   pip install -e .
-  /users/ljiayong/projects/qlib/scripts/tune/cn/lightgbm/run_tune.sh
+  /users/ljiayong/projects/qlib/scripts/tune/cn/lightgbm/run_tune.sh ${SUFFIX}
   date --utc
 "
