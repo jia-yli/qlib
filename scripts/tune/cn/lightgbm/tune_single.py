@@ -96,7 +96,7 @@ def run_eval(model, dataset, segment, recorder, config):
     f'capm_alpha_annual_{segment}': analysis['fit_capm'].loc['alpha_annual', 'CAPM'],
   })
   recorder.log_metrics(**metrics)
-  return metrics      
+  return metrics
 
 def objective(trial, base_config, experiment_name):
   trial_config = suggest_lightgbm_config(trial)
@@ -107,7 +107,7 @@ def objective(trial, base_config, experiment_name):
   with R.start(experiment_name=experiment_name):
     recorder = R.get_recorder()
     rid = recorder.id
-    trial.set_user_attr("rid", rid)
+    trial.set_user_attr("deploy_rid", rid)
 
     recorder.log_params(**flatten_dict(config))
     recorder.save_objects(**{"config.pkl": config})
