@@ -1,5 +1,9 @@
 import os
+import fire
+
 import optuna
+from optuna.storages import JournalStorage
+from optuna.storages.journal import JournalFileBackend
 
 import numpy as np
 import pandas as pd
@@ -11,170 +15,198 @@ from qlib.constant import REG_CN
 from qlib.workflow import R
 from qlib.contrib.evaluate import risk_analysis, fit_capm
 
-def plot_cv_task(cv_task_top_k_results, selection_criterion, cv_task_idx, save_path):
+def plot_task(task_results, task_idx, save_path):
   # [top_k_idx][fold_idx]
-  k = len(cv_task_top_k_results)
-  n_folds = len(cv_task_top_k_results[0]) - 1  # last one is deploy
+  k = len(task_results)
+  n_folds = len(task_results[0]) - 1  # last one is deploy
   steps_per_year = 246
 
-  top_k_dfs = [] # [top_k_idx]
-  for result in cv_task_top_k_results:
-    df = pd.concat(result, axis=0)
+  top_k_reports = [] # [top_k_idx]
+  top_k_preds = []
+  for result in task_results:
+    report = pd.concat([r["report_test"] for r in result], axis=0)
+    pred = pd.concat([r["pred_test"] for r in result], axis=0)
     # df = df[~df.index.duplicated(keep='first')]
-    top_k_dfs.append(df[['return', 'cost', 'bench']])
-  
-  fold_start_index = [df.index[0] for df in cv_task_top_k_results[0]]
+    top_k_reports.append(report[['return', 'cost', 'bench']])
+    top_k_preds.append(pred)
 
-  with_cost_cum = []
-  without_cost_cum = []
+  fold_boundaries = [r["report_test"].index[0] for r in task_results[0]]
+
+  return_cum = []
+  cost_cum = []
   bench_cum = []
-  with_cost_metrics = []
-  without_cost_metrics = []
+  metrics = []
 
-  for idx, df in enumerate(top_k_dfs):
-    # Step returns
-    r_wc = df['return'] - df['cost']
-    r_wo = df['return']
-    r_b  = df['bench']
+  for idx, df in enumerate(top_k_reports):
+    r = df['return'] - df['cost']
+    cum_r = (1 + r).cumprod() - 1
+    cum_c = ((1 + cum_r) * df['cost']).cumsum()
+    cum_b = (1 + df['bench']).cumprod() - 1
 
-    # Cumulative series
-    cum_wc = (1 + r_wc).cumprod() - 1
-    cum_wo = (1 + r_wo).cumprod() - 1
-    cum_b  = (1 + r_b).cumprod() - 1
-
-    with_cost_cum.append(cum_wc)
-    without_cost_cum.append(cum_wo)
+    return_cum.append(cum_r)
+    cost_cum.append(cum_c)
     bench_cum.append(cum_b)
 
-    with_cost_metrics.append((
-      risk_analysis(r_wc, N=steps_per_year, mode="product"),
-      fit_capm(r_wc, r_b, N=steps_per_year, r_f_annual=2e-2)
-    ))
-    without_cost_metrics.append((
-      risk_analysis(r_wo, N=steps_per_year, mode="product"),
-      fit_capm(r_wo, r_b, N=steps_per_year, r_f_annual=2e-2)
+    metrics.append((
+      risk_analysis(r, N=steps_per_year, mode="product"),
+      fit_capm(r, df['bench'], N=steps_per_year, r_f_annual=2e-2)
     ))
 
-  fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-  fig.suptitle(f"CV Task {cv_task_idx} Top-{k} Results by {selection_criterion}")
+  fig, axes = plt.subplots(3, 1, figsize=(6, 10))
+  fig.suptitle(f"Task {task_idx} Top-{k} Results")
 
-  for cfg_idx, (r_cum, cfg) in enumerate(zip([with_cost_cum, without_cost_cum], ["with Cost", "without Cost"])):
-    ax = axes[0, cfg_idx]
-    for i, s in enumerate(r_cum):
-      ax.plot(s.index, s.values, label=f"Top-{i+1}")
-    ax.plot(bench_cum[0].index, bench_cum[0].values, label="Bench", linestyle='--', linewidth=1)
-    ax.set_title(f"Total Return {cfg}")
-    ax.set_ylabel("Total Return")
-    ax.tick_params(axis='x', labelbottom=False)
-    ax.grid()
-    ax.legend()
+  # return
+  ax = axes[0]
+  for i, s in enumerate(return_cum):
+    ax.plot(s.index, s.values, label=f"Top-{i+1}")
+  ax.plot(bench_cum[0].index, bench_cum[0].values, label="Bench", linestyle='--', linewidth=1)
+  ax.set_title(f"Total Return")
+  ax.set_ylabel("Total Return")
+  ax.tick_params(labelbottom=False)
 
-    ax = axes[1, cfg_idx]
-    for i, (r, b) in enumerate(zip(r_cum, bench_cum)):
-      excess = r - b
-      ax.plot(excess.index, excess.values, label=f"Top-{i+1}")
-    ax.set_title(f"Excess Return {cfg}")
-    ax.set_ylabel("Excess Return")
-    ax.tick_params(axis='x', rotation=90)
-    ax.grid()
-    ax.legend()
-  
+  # cost
+  ax = axes[1]
+  for i, s in enumerate(cost_cum):
+    ax.plot(s.index, s.values, label=f"Top-{i+1}")
+  ax.set_title(f"Cost Ratio")
+  ax.set_ylabel("Cost Ratio")
+  ax.tick_params(labelbottom=False)
+
+  # excess return
+  ax = axes[2]
+  for i, (r, b) in enumerate(zip(return_cum, bench_cum)):
+    excess = r - b
+    ax.plot(excess.index, excess.values, label=f"Top-{i+1}")
+  ax.set_title(f"Excess Return")
+  ax.set_ylabel("Excess Return")
+  ax.tick_params(axis='x', rotation=90)
+
   for ax in axes.flat:
-    for d in fold_start_index:
-      ax.axvline(d, linestyle='--', linewidth=1, color='red', alpha=0.5)
+    ax.grid()
+    ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
+    for b in fold_boundaries:
+      ax.axvline(b, linestyle='--', linewidth=1, color='red', alpha=0.5)
 
   os.makedirs(save_path, exist_ok=True)
-  plt.savefig(os.path.join(save_path, f"cv_task_{cv_task_idx}_top_{k}_results_by_{selection_criterion}.png"), bbox_inches="tight", dpi=500)
+  plt.savefig(os.path.join(save_path, f"task_{task_idx}_top_{k}_results.png"), bbox_inches="tight", dpi=500)
   plt.close()
 
-def plot_all_cv_task(top_k_results, selection_criterion, save_path):
+def plot_all_tasks(results, save_path):
   # [cv_task_idx][top_k_idx][fold_idx]
-  num_cv_tasks = len(top_k_results)
-  k = len(top_k_results[0])
-  n_folds = len(top_k_results[0][0]) - 1  # last one is deploy
+  n_tasks = len(results)
+  k = len(results[0])
+  n_folds = len(results[0][0]) - 1  # last one is deploy
   steps_per_year = 246
 
-  top_k_dfs = [] # [top_k_idx]
+  top_k_reports = [] # [top_k_idx]
+  top_k_preds = []
   for idx in range(k):
-    result = []
-    for cv_task_idx in range(num_cv_tasks):
-      result.append(top_k_results[cv_task_idx][idx][n_folds])  # deploy results
-    df = pd.concat(result, axis=0)
+    report = pd.concat([r[idx][n_folds]["report_test"] for r in results], axis=0)
+    pred = pd.concat([r[idx][n_folds]["pred_test"] for r in results], axis=0)
     # df = df[~df.index.duplicated(keep='first')]
-    top_k_dfs.append(df[['return', 'cost', 'bench']])
-  
-  deploy_start_index = [top_k_results[cv_task_idx][0][n_folds].index[0] for cv_task_idx in range(num_cv_tasks)]
+    top_k_reports.append(report[['return', 'cost', 'bench']])
+    top_k_preds.append(pred)
 
-  with_cost_cum = []
-  without_cost_cum = []
+  deploy_boundaries = [r[0][n_folds]["report_test"].index[0] for r in results]
+
+  return_cum = []
+  cost_cum = []
   bench_cum = []
-  with_cost_metrics = []
-  without_cost_metrics = []
+  metrics = []
 
-  for idx, df in enumerate(top_k_dfs):
-    # Step returns
-    r_wc = df['return'] - df['cost']
-    r_wo = df['return']
-    r_b  = df['bench']
+  for idx, df in enumerate(top_k_reports):
+    r = df['return'] - df['cost']
+    cum_r = (1 + r).cumprod() - 1
+    cum_c = ((1 + cum_r) * df['cost']).cumsum()
+    cum_b = (1 + df['bench']).cumprod() - 1
 
-    # Cumulative series
-    cum_wc = (1 + r_wc).cumprod() - 1
-    cum_wo = (1 + r_wo).cumprod() - 1
-    cum_b  = (1 + r_b).cumprod() - 1
-
-    with_cost_cum.append(cum_wc)
-    without_cost_cum.append(cum_wo)
+    return_cum.append(cum_r)
+    cost_cum.append(cum_c)
     bench_cum.append(cum_b)
 
-    with_cost_metrics.append((
-      risk_analysis(r_wc, N=steps_per_year, mode="product"),
-      fit_capm(r_wc, r_b, N=steps_per_year, r_f_annual=2e-2)
-    ))
-    without_cost_metrics.append((
-      risk_analysis(r_wo, N=steps_per_year, mode="product"),
-      fit_capm(r_wo, r_b, N=steps_per_year, r_f_annual=2e-2)
+    metrics.append((
+      risk_analysis(r, N=steps_per_year, mode="product"),
+      fit_capm(r, df['bench'], N=steps_per_year, r_f_annual=2e-2)
     ))
 
-  fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-  fig.suptitle(f"Deploy Top-{k} Results by {selection_criterion}")
+  fig, axes = plt.subplots(3, 1, figsize=(6, 10))
+  fig.suptitle(f"Deploy Top-{k} Results")
 
-  for cfg_idx, (r_cum, cfg) in enumerate(zip([with_cost_cum, without_cost_cum], ["with Cost", "without Cost"])):
-    ax = axes[0, cfg_idx]
-    for i, s in enumerate(r_cum):
-      ax.plot(s.index, s.values, label=f"Top-{i+1}")
-    ax.plot(bench_cum[0].index, bench_cum[0].values, label="Bench", linestyle='--', linewidth=1)
-    ax.set_title(f"Total Return {cfg}")
-    ax.set_ylabel("Total Return")
-    ax.tick_params(axis='x', labelbottom=False)
-    ax.grid()
-    ax.legend()
+  # return
+  ax = axes[0]
+  for i, s in enumerate(return_cum):
+    ax.plot(s.index, s.values, label=f"Top-{i+1}")
+  ax.plot(bench_cum[0].index, bench_cum[0].values, label="Bench", linestyle='--', linewidth=1)
+  ax.set_title(f"Total Return")
+  ax.set_ylabel("Total Return")
+  ax.tick_params(labelbottom=False)
 
-    ax = axes[1, cfg_idx]
-    for i, (r, b) in enumerate(zip(r_cum, bench_cum)):
-      excess = r - b
-      ax.plot(excess.index, excess.values, label=f"Top-{i+1}")
-    ax.set_title(f"Excess Return {cfg}")
-    ax.set_ylabel("Excess Return")
-    ax.tick_params(axis='x', rotation=90)
-    ax.grid()
-    ax.legend()
-  
+  # cost
+  ax = axes[1]
+  for i, s in enumerate(cost_cum):
+    ax.plot(s.index, s.values, label=f"Top-{i+1}")
+  ax.set_title(f"Cost Ratio")
+  ax.set_ylabel("Cost Ratio")
+  ax.tick_params(labelbottom=False)
+
+  # excess return
+  ax = axes[2]
+  for i, (r, b) in enumerate(zip(return_cum, bench_cum)):
+    excess = r - b
+    ax.plot(excess.index, excess.values, label=f"Top-{i+1}")
+  ax.set_title(f"Excess Return")
+  ax.set_ylabel("Excess Return")
+  ax.tick_params(axis='x', rotation=90)
+
   for ax in axes.flat:
-    for d in deploy_start_index:
-      ax.axvline(d, linestyle='--', linewidth=1, color='red', alpha=0.5)
+    ax.grid()
+    ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
+    for b in deploy_boundaries:
+      ax.axvline(b, linestyle='--', linewidth=1, color='red', alpha=0.5)
 
   os.makedirs(save_path, exist_ok=True)
-  plt.savefig(os.path.join(save_path, f"deploy_top_{k}_results_by_{selection_criterion}.png"), bbox_inches="tight", dpi=500)
+  plt.savefig(os.path.join(save_path, f"deploy_top_{k}_results.png"), bbox_inches="tight", dpi=500)
   plt.close()
 
-def main():
+def main(workflow="rolling_cv"):
   data_handler = "Alpha158"
   market = "hs300" # sz50, hs300, zz500
   benchmark = "SH000300" # SH000016, SH000300, SH000905
   deal_price = "close"
   freq = "1d"
 
-  n_folds = 4
+  if workflow == "rolling":
+    n_tasks = 1 # number of different hyperparameter optimization tasks = num test splits
+    n_folds = 0 # number of cross-validation folds, 0 means no CV
+  elif workflow == "rolling_cv":
+    n_tasks = 7 # number of different hyperparameter optimization tasks = num test splits
+    n_folds = 4 # number of cross-validation folds, 0 means no CV
+  k = 5  # top k models to select and plot
+
+  identifier = f"tune_{workflow}_{data_handler}_{market}_{deal_price}_{freq}"
+
+  workspace_path = "/iopsstor/scratch/cscs/ljiayong/workspace/qlib/tune/cn/lightgbm"
+  storage = JournalStorage(JournalFileBackend(os.path.join(workspace_path, f"optuna/{identifier}_journal.log")))
+
+  '''
+  To Sqlite DB
+  '''
+  # dst_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"results/{identifier}_sqlite.db")
+  # os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+  # # os.path.exists(dst_path) and os.remove(dst_path)
+
+  # study_names = optuna.study.get_all_study_names(storage=storage)
+  # for study_name in study_names:
+  #   print(f"Copying study: {study_name}, {len(study_names)} studies in total ...")
+  #   optuna.copy_study(
+  #     from_study_name=study_name,
+  #     from_storage=storage,
+  #     to_storage=f"sqlite:///{dst_path}",
+  #   )
+  
+  '''
+  Load Top K Results and Plot
+  '''
 
   qlib.init(**{
     "provider_uri": "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/bin",
@@ -183,18 +215,16 @@ def main():
       "class": "MLflowExpManager",
       "module_path": "qlib.workflow.expm",
       "kwargs": {
-        "uri": "file:///" + os.path.join(os.path.dirname(os.path.abspath(__file__)), f"results/runs"),
+        "uri": "file:///" + os.path.join(workspace_path, f"mlrun/{identifier}_runs"),
         "default_exp_name": "default_experiment",
       },
     }
   })
 
   dfs = []
-  for cv_task_idx in range(n_folds):
-    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results/optuna.db")
-    storage_uri = f"sqlite:///{db_path}"
-    study_name = f"LightGBM_{data_handler}_{market}_{freq}_task{cv_task_idx}"
-    study = optuna.load_study(study_name=study_name, storage=storage_uri)
+  for task_idx in range(n_tasks):
+    study_name = f"task_{task_idx}"
+    study = optuna.load_study(study_name=study_name, storage=storage)
     trials_data = []
     for trial in study.trials:
       trial_dict = {
@@ -202,41 +232,38 @@ def main():
         'state': trial.state.name,
         'value': trial.value,
       }
-      trial_dict.update(trial.params)
       trial_dict.update(trial.user_attrs)
       trials_data.append(trial_dict)
     df = pd.DataFrame(trials_data)
     df = df[df['state'] == 'COMPLETE'].dropna().reset_index(drop=True)
 
-    # model selection based on fit task results
-    df["cv_annualized_return"] = (1 + df[[f"fit_{idx}_annualized_return_test" for idx in range(n_folds)]]).prod(axis=1) ** (1 / n_folds) - 1
-    df["cv_information_ratio"] = df[[f"fit_{idx}_information_ratio_test" for idx in range(n_folds)]].mean(axis=1)
     dfs.append(df)
-  
-  k = 5
-  for selection_criterion in ["cv_annualized_return", "cv_information_ratio"]:
-    top_k_results = [] # [cv_task_idx][top_k_idx][fold_idx]
-    for cv_task_idx, df in enumerate(dfs):
-      df = df.sort_values(selection_criterion, ascending=False).reset_index(drop=True).head(k)
-      cv_task_top_k_results = []
-      for top_idx in range(k):
-        result = []
-        for fit_task_idx in range(n_folds):
-          recorder = R.get_recorder(experiment_name=study_name, recorder_id= df.loc[top_idx, f"fit_{fit_task_idx}_rid"])
-          report_test = recorder.load_object(f"portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0]
-          result.append(report_test)
-        recorder = R.get_recorder(experiment_name=study_name, recorder_id= df.loc[top_idx, f"deploy_rid"])
-        report_test = recorder.load_object(f"portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0]
-        result.append(report_test)
-        cv_task_top_k_results.append(result)
-      # plot current cv task
-      save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results/plots")
-      plot_cv_task(cv_task_top_k_results, selection_criterion, cv_task_idx, save_path)
-      top_k_results.append(cv_task_top_k_results)
-    save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results/plots")
-    plot_all_cv_task(top_k_results, selection_criterion, save_path)
+
+  save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"results/plots/{identifier}")
+  results = [] # [task_idx][k_idx][fold_idx]
+  for task_idx, df in enumerate(dfs):
+    df = df.sort_values("value", ascending=False).reset_index(drop=True).head(k)
+    task_results = [] # [top_k_idx][fold_idx]
+    for top_idx in range(k):
+      trial_results = [] # [fold_idx]
+      for fold_idx in range(n_folds):
+        recorder = R.get_recorder(experiment_name=f"task_{task_idx}", recorder_id=df.loc[top_idx, f"fit_{fold_idx}_rid"])
+        trial_results.append({
+          "pred_test": recorder.load_object("pred_test.pkl"),
+          "report_test": recorder.load_object("portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0],
+        })
+      recorder = R.get_recorder(experiment_name=f"task_{task_idx}", recorder_id= df.loc[top_idx, f"deploy_rid"])
+      trial_results.append({
+        "pred_test": recorder.load_object("pred_test.pkl"),
+        "report_test": recorder.load_object("portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0],
+      })
+      task_results.append(trial_results)
+    # plot current cv task
+    plot_task(task_results, task_idx, save_path)
+    results.append(task_results)
+  plot_all_tasks(results, save_path)
 
 
 if __name__ == "__main__":
-  main()
+  fire.Fire(main)
 

@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=128               # Number of CPU cores per task
 #SBATCH --mem=384G                        # Memory allocation
 #SBATCH --gpus=4                          # Number of GPUs
-#SBATCH --time=4:00:00                    # Time limit
+#SBATCH --time=12:00:00                    # Time limit
 
 # Print detailed job metadata
 JOB_TIME_LIMIT=$(squeue -j $SLURM_JOB_ID -h --Format TimeLimit)
@@ -31,6 +31,7 @@ echo "Job Start Time: $CURRENT_TIMESTAMP_FULL"
 echo "==================================================="
 
 # sbatch --job-name=tune-single launch_tune.sbatch single
+# sbatch --job-name=tune-rolling-cv --array=1-8%2 launch_tune.sbatch rolling_cv
 
 SUFFIX="${1:-single}"
 

@@ -1,7 +1,69 @@
 import pandas as pd
+from pandas.tseries.frequencies import to_offset
 from pathlib import Path
 from ruamel.yaml import YAML
 from qlib.constant import REG_CN
+
+def gen_rolling_splits(
+  start_time, # inc
+  end_time, # inc
+  train_size,
+  valid_size,
+  test_size,
+  inclusive = True,
+  freq = "1d",
+):
+  start_time = pd.Timestamp(start_time)
+  end_time = pd.Timestamp(end_time)
+
+  train_offset = to_offset(train_size)
+  valid_offset = to_offset(valid_size)
+  test_offset  = to_offset(test_size)
+
+  all_segments = []
+
+  train_start = start_time
+  while True:
+    train_end = train_start + train_offset
+    valid_start = train_end
+    valid_end = valid_start + valid_offset
+    test_start = valid_end
+    test_end = test_start + test_offset
+
+    if valid_start <= end_time:
+      _valid_end = min(valid_end, end_time + pd.to_timedelta(freq))
+    else:
+      _valid_end = valid_end
+    
+    if test_start <= end_time:
+      _test_end  = min(test_end , end_time + pd.to_timedelta(freq))
+    else:
+      _test_end = test_end
+
+    if inclusive:
+      segments = {
+        "train_split": (train_start.strftime("%Y-%m-%d %H:%M:%S"), (train_end - pd.to_timedelta(freq)).strftime("%Y-%m-%d %H:%M:%S")),
+        "valid_split": (valid_start.strftime("%Y-%m-%d %H:%M:%S"), (_valid_end - pd.to_timedelta(freq)).strftime("%Y-%m-%d %H:%M:%S")),
+        "test_split" : (test_start .strftime("%Y-%m-%d %H:%M:%S"), (_test_end  - pd.to_timedelta(freq)).strftime("%Y-%m-%d %H:%M:%S")),
+      }
+    else:
+      segments = {
+        "train_split": (train_start.strftime("%Y-%m-%d %H:%M:%S"), train_end.strftime("%Y-%m-%d %H:%M:%S")),
+        "valid_split": (valid_start.strftime("%Y-%m-%d %H:%M:%S"), _valid_end.strftime("%Y-%m-%d %H:%M:%S")),
+        "test_split" : (test_start .strftime("%Y-%m-%d %H:%M:%S"), _test_end .strftime("%Y-%m-%d %H:%M:%S")),
+      }
+
+    all_segments.append(segments)
+
+    if test_start > end_time:
+      # stop here, last test set is completely out of range
+      # end_time is always inclusive
+      break
+    test_start_next = test_end
+    train_start = test_start_next - train_offset - valid_offset
+
+  return all_segments
+
 
 def generate_config(base_config, config):
   # parse base config
@@ -105,8 +167,8 @@ def generate_config(base_config, config):
       "module_path": "qlib.contrib.strategy",
       "kwargs": {
         "signal": "<PRED>",
-        "topk": 50,
-        "n_drop": 5
+        "topk": 20,
+        "n_drop": 2
       }
     },
     "backtest": {
@@ -119,8 +181,8 @@ def generate_config(base_config, config):
         "trade_unit": 100,
         "limit_threshold": 0.095,
         "deal_price": deal_price,
-        "open_cost": 0.0005,
-        "close_cost": 0.0015,
+        "open_cost": 0.002,
+        "close_cost": 0.002,
         "min_cost": 5
       }
     }
