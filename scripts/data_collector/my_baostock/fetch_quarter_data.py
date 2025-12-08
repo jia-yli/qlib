@@ -45,8 +45,11 @@ if __name__ == "__main__":
   instrument_list_save_path = save_path / "raw" / "instrument_list"
   instrument_list_save_path.mkdir(parents=True, exist_ok=True)
 
-  quarter_data_path = save_path / "quarter_data"
+  quarter_data_path = save_path / "raw" / "quarter_data"
   quarter_data_path.mkdir(parents=True, exist_ok=True)
+
+  processed_quarter_data_path = save_path / "processed" / "quarter_data"
+  processed_quarter_data_path.mkdir(parents=True, exist_ok=True)
 
   '''
   1. Get Index Components
@@ -59,11 +62,21 @@ if __name__ == "__main__":
   all_symbols = sorted(symbols)
 
   '''
-  3. Fetch Quarter Data for Symbols
+  2. Fetch Quarter Data for Symbols
   '''
-  logger.info(f"Total symbols to fetch quarter data: {len(all_symbols)}")
-  bs.login()
+  # logger.info(f"Total symbols to fetch quarter data: {len(all_symbols)}")
+  # bs.login()
+  # for symbol in all_symbols:
+  #   df = get_quarter_data(symbol, 2019, 2025)
+  #   df.to_csv(quarter_data_path / f"{symbol}.csv", index=False)
+  # bs.logout()
+
+  '''
+  3. Process Quarter Data
+  '''
   for symbol in all_symbols:
-    df = get_quarter_data(symbol, 2019, 2025)
-    df.to_csv(quarter_data_path / f"{symbol}.csv", index=False)
-  bs.logout()  
+    normalized_symbol = normalize_symbol(symbol)
+    df = pd.read_csv(quarter_data_path / f"{symbol}.csv")
+    df.rename(columns={"code": "symbol"}, inplace=True)
+    df['symbol'] = normalized_symbol
+    df.to_csv(processed_quarter_data_path / f"{normalized_symbol}.csv", index=False)
