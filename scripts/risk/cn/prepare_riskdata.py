@@ -20,14 +20,6 @@ def prepare_riskdata(base_config, T, start_time):
   qlib.init(**{
     "provider_uri": "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/bin",
     "region": REG_CN,
-    "exp_manager": {
-      "class": "MLflowExpManager",
-      "module_path": "qlib.workflow.expm",
-      "kwargs": {
-        "uri": "file:///" + os.path.join(workspace_path, f"mlrun/prepare_riskdata"),
-        "default_exp_name": "default_experiment",
-      },
-    }
   })
 
   # D.features: df with (instrument, datetime) index
