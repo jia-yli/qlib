@@ -128,7 +128,7 @@ def objective(trial, base_config, experiment_name):
 
   metrics = metrics_valid | metrics_test
 
-  return metrics["excess_annualized_return_valid"]
+  return metrics["ic_valid"]
 
 
 def main(n_trials=10):

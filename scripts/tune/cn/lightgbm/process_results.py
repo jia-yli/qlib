@@ -175,7 +175,7 @@ def main(workflow="rolling_cv"):
   deal_price = "close"
   freq = "1d"
 
-  if workflow == "rolling":
+  if workflow == "single":
     n_tasks = 1 # number of different hyperparameter optimization tasks = num test splits
     n_folds = 0 # number of cross-validation folds, 0 means no CV
   elif workflow == "rolling_cv":
@@ -246,17 +246,28 @@ def main(workflow="rolling_cv"):
     task_results = [] # [top_k_idx][fold_idx]
     for top_idx in range(k):
       trial_results = [] # [fold_idx]
-      for fold_idx in range(n_folds):
-        recorder = R.get_recorder(experiment_name=f"task_{task_idx}", recorder_id=df.loc[top_idx, f"fit_{fold_idx}_rid"])
+      if n_folds == 0:
+        recorder = R.get_recorder(experiment_name=f"task_{task_idx}", recorder_id= df.loc[top_idx, f"deploy_rid"])
+        trial_results.append({
+          "pred_test": recorder.load_object("pred_valid.pkl"),
+          "report_test": recorder.load_object("portfolio_metric_valid.pkl")["1day" if freq == "1d" else freq][0],
+        })
         trial_results.append({
           "pred_test": recorder.load_object("pred_test.pkl"),
           "report_test": recorder.load_object("portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0],
         })
-      recorder = R.get_recorder(experiment_name=f"task_{task_idx}", recorder_id= df.loc[top_idx, f"deploy_rid"])
-      trial_results.append({
-        "pred_test": recorder.load_object("pred_test.pkl"),
-        "report_test": recorder.load_object("portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0],
-      })
+      else:
+        for fold_idx in range(n_folds):
+          recorder = R.get_recorder(experiment_name=f"task_{task_idx}", recorder_id=df.loc[top_idx, f"fit_{fold_idx}_rid"])
+          trial_results.append({
+            "pred_test": recorder.load_object("pred_test.pkl"),
+            "report_test": recorder.load_object("portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0],
+          })
+        recorder = R.get_recorder(experiment_name=f"task_{task_idx}", recorder_id= df.loc[top_idx, f"deploy_rid"])
+        trial_results.append({
+          "pred_test": recorder.load_object("pred_test.pkl"),
+          "report_test": recorder.load_object("portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0],
+        })
       task_results.append(trial_results)
     # plot current cv task
     plot_task(task_results, task_idx, save_path)
