@@ -49,7 +49,7 @@ def incremental_fetch(
       df_end = func(current_end, end_time, **func_kwargs)
       df = pd.concat([df, df_end], ignore_index=True)
     
-    df = df.drop_duplicates(subset=unique_keys)
+    df = df.drop_duplicates(subset=unique_keys, keep='last')
     df = df.sort_values(by=unique_keys).reset_index(drop=True)
 
   df.to_parquet(parquet_path+".tmp")
@@ -176,9 +176,12 @@ def normalize_symbol(symbol):
 
 if __name__ == "__main__":
   # args
-  start = "2024-12-01" # inc
-  end   = "2025-01-01" # inc
+  start = "2019-01-01" # inc
+  end   = "2025-12-01" # inc
   tz    = 'Asia/Shanghai'
+
+  run_fetch = False
+  margin_end = "5d"
 
   if end is None:
     now = pd.Timestamp.now(tz='UTC').tz_convert(tz)
@@ -196,50 +199,71 @@ if __name__ == "__main__":
     'zz500': 'sh.000905',
   }
   # index_lst = ['sz50', 'hs300', 'zz500']
-  index_lst = ['sz50']
+  index_lst = ['hs300']
   index_symbols = [index_to_symbol[x] for x in index_lst]
 
   '''
   1. Fetch Trade Calendar
   '''
-  bs.login()
-  trade_dates = incremental_fetch(
-    func = fetch_trade_dates,
-    start_time = start_time,
-    end_time = end_time,
-    func_kwargs = {},
-    save_path = os.path.join(save_path, "raw", "trade_dates"),
-    file_name = "trade_dates",
-    date_key = "calendar_date",
-    unique_keys = ["calendar_date"],
-    margin_end = "5d",
-  )
-  bs.logout()
-
-  '''
-  2. Fetch Instrument List
-  '''
-  bs.login()
-  for index in index_lst:
-    df = incremental_fetch(
-      func = fetch_index_stocks,
+  if run_fetch:
+    bs.login()
+    incremental_fetch(
+      func = fetch_trade_dates,
       start_time = start_time,
       end_time = end_time,
-      func_kwargs = {"index": index, "trade_dates": trade_dates},
-      save_path = os.path.join(save_path, "raw", "instrument_list"),
-      file_name = f"{index}_stocks",
-      date_key = "query_date",
-      unique_keys = ["query_date", "code"],
-      margin_end = "5d",
+      func_kwargs = {},
+      save_path = os.path.join(save_path, "raw", "trade_dates"),
+      file_name = "trade_dates",
+      date_key = "calendar_date",
+      unique_keys = ["calendar_date"],
+      margin_end = margin_end,
     )
-  bs.logout()
+    bs.logout()
 
   '''
-  3. Get Index Components
+  2. Process Trade Calendar
   '''
+  trade_dates = pd.read_parquet(os.path.join(save_path, "raw", "trade_dates", "trade_dates.parquet"))
+  # trim start and end such that both are trading dates
+  date_range = trade_dates[trade_dates['is_trading_day'] == '1']['calendar_date']
+  date_range = pd.to_datetime(date_range).dt.tz_localize(tz)
+  date_range = date_range[(date_range >= start_time) & (date_range <= end_time)]
+
+  start_time = max(start_time, date_range.min())
+  end_time = min(date_range.max(), end_time)
+
+  trade_calendar = date_range.dt.strftime("%Y-%m-%d")
+  os.makedirs(os.path.join(save_path, "processed", "trade_dates"), exist_ok=True)
+  trade_calendar.to_csv(os.path.join(save_path, "processed", "trade_dates", "trade_calendar.csv"), index=False, header=False)
+
+  '''
+  3. Fetch Instrument List
+  '''
+  if run_fetch:
+    bs.login()
+    for index in index_lst:
+      logger.info(f"Fetching stocks for {index} ...")
+      incremental_fetch(
+        func = fetch_index_stocks,
+        start_time = start_time,
+        end_time = end_time,
+        func_kwargs = {"index": index, "trade_dates": trade_dates},
+        save_path = os.path.join(save_path, "raw", "instrument_list"),
+        file_name = f"{index}_stocks",
+        date_key = "query_date",
+        unique_keys = ["query_date", "code"],
+        margin_end = margin_end,
+      )
+    bs.logout()
+
+  '''
+  4. Process Instrument List
+  '''
+  stock_symbols = set()
   for index in index_lst:
     df = pd.read_parquet(os.path.join(save_path, "raw", "instrument_list", f"{index}_stocks.parquet"))
-    df['date'] = pd.to_datetime(df['query_date']).dt.tz_localize(tz) # no tz info needed
+    df['date'] = pd.to_datetime(df['query_date']).dt.tz_localize(tz)
+    df = df[(df['date'] >= start_time) & (df['date'] <= end_time)]
     df['is_enlisted'] = 1
     enlisted_state = (
       pd.pivot_table(
@@ -254,103 +278,92 @@ if __name__ == "__main__":
       .sort_index()
     )
     enlisted_regions = extract_enlisted_regions(enlisted_state)
+    stock_symbols.update(enlisted_regions['symbol'].unique())
 
+    # save enlisted state
     os.makedirs(os.path.join(save_path, "processed", "instrument_list"), exist_ok=True)
     enlisted_state.to_parquet(os.path.join(save_path, "processed", "instrument_list", f"{index}_enlisted_state.parquet"))
-    enlisted_regions.to_parquet(os.path.join(save_path, "processed", "instrument_list", f"{index}_enlisted_regions.parquet"))
 
-  '''
-  4. Fetch Klines for All Symbols
-  '''
-  stock_symbols = set()
-  for index in index_lst:
-    enlisted_regions = pd.read_parquet(os.path.join(save_path, "processed", "instrument_list", f"{index}_enlisted_regions.parquet"))
-    stock_symbols.update(enlisted_regions['symbol'].unique())
+    # process & dump enlisted regions to qlib format
+    enlisted_regions["symbol"] = enlisted_regions["symbol"].apply(normalize_symbol)
+    enlisted_regions["enlisted_region_start"] = enlisted_regions["enlisted_region_start"].dt.strftime("%Y-%m-%d")
+    enlisted_regions["enlisted_region_end_incl"] = enlisted_regions["enlisted_region_end_incl"].dt.strftime("%Y-%m-%d")
+    enlisted_regions[["symbol", "enlisted_region_start", "enlisted_region_end_incl"]].to_csv(
+      os.path.join(save_path, "processed", "instrument_list", f"{index}.txt"), sep='\t', index=False, header=False
+    )
   all_symbols = sorted(stock_symbols | set(index_symbols))
 
-  bs.login()
+  '''
+  5. Fetch Klines
+  '''
+  if run_fetch:
+    bs.login()
+    for symbol in all_symbols:
+      logger.info(f"Fetching kline data for {symbol} ...")
+      incremental_fetch(
+        func = fetch_kline_data,
+        start_time = start_time,
+        end_time = end_time,
+        func_kwargs = {"symbol": symbol},
+        save_path = os.path.join(save_path, "raw", "kline_data"),
+        file_name = f"{symbol}",
+        date_key = "date",
+        unique_keys = ["date"],
+        margin_end = margin_end,
+      )
+    bs.logout()
+
+  '''
+  6. Process Klines
+  '''
+  trade_calendar = pd.read_csv(os.path.join(save_path, "processed", "trade_dates", "trade_calendar.csv"), header=None).iloc[:,0]
   for symbol in all_symbols:
-    incremental_fetch(
-      func = fetch_kline_data,
-      start_time = start_time,
-      end_time = end_time,
-      func_kwargs = {"symbol": symbol},
-      save_path = os.path.join(save_path, "raw", "kline_data"),
-      file_name = f"{symbol}",
-      date_key = "date",
-      unique_keys = ["date"],
-      margin_end = "5d",
-    )
-  bs.logout()  
+    normalized_symbol = normalize_symbol(symbol)
+    df = pd.read_csv(os.path.join(save_path, "raw", "kline_data", f"{symbol}.csv"))
+    df = df.set_index("date")
+    df = df.reindex(trade_calendar[(trade_calendar >= df.index.min()) & (trade_calendar <= df.index.max())].rename("date"))
+    df = df.reset_index()
+    '''
+    date,code,open,high,low,close,volume,amount,turn,tradestatus,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST,adjclose
+    '''
+    df.rename(columns={"code": "symbol"}, inplace=True)
+    df["symbol"] = normalized_symbol
+    # fill missing
+    df["close"] = df["close"].ffill()
+    # fill ohl with last close
+    df["open"] = df["open"].combine_first(df["close"])
+    df["high"] = df["high"].combine_first(df["close"])
+    df["low"]  = df["low"] .combine_first(df["close"])
+    # fill volume with 0
+    df["volume"] = df["volume"].fillna(0)
+    df["amount"] = df["amount"].fillna(0)
+    df["turn"]   = df["turn"]  .fillna(0)
+    df["tradestatus"] = df["tradestatus"].fillna(0)
+    df.drop(columns="tradestatus", inplace=True)
 
-  '''
-  4. Make Data Dump-Ready
-  '''
-  # symbol_klines = {}
-  # trade_calendar = None
-  # for i, index in enumerate(index_lst):
-  #   enlisted_state = pd.read_feather(instrument_list_save_path / f"{index}_enlisted_state.feather")
-  #   trade_calendar = enlisted_state.index
-  #   enlisted_regions = extract_enlisted_regions(enlisted_state)
+    df["peTTM"] = df["peTTM"].ffill()
+    df["pbMRQ"] = df["pbMRQ"].ffill()
+    df["psTTM"] = df["psTTM"].ffill()
+    df["pcfNcfTTM"] = df["pcfNcfTTM"].ffill()
+    df["isST"] = df["isST"].ffill()
+    df.drop(columns="isST", inplace=True)
 
-  #   symbols = [index_symbols[i]] + list(enlisted_regions["symbol"].unique())
-  #   for symbol in symbols:
-  #     if symbol not in symbol_klines.keys():
-  #       symbol_klines[symbol] = pd.read_csv(raw_kline_path / f"{symbol}.csv")
+    df["factor"] = df["adjclose"] / df["close"]
+    df["factor"] = df["factor"].ffill()
+    df.drop(columns="adjclose", inplace=True)
+    for col in df.columns:
+      if col in ["date", "symbol", "amount", "turn", "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM", "factor"]:
+        pass
+      elif col in ["open", "high", "low", "close"]:
+        df[col] = df[col] * df["factor"]
+      elif col in ["volume"]:
+        df[col] = df[col] / df["factor"]
+      else:
+        raise ValueError(f"Unknown column: {col}")
 
-  #   enlisted_regions["symbol"] = enlisted_regions["symbol"].apply(normalize_symbol)
-  #   enlisted_regions["enlisted_region_start"] = enlisted_regions["enlisted_region_start"].dt.strftime("%Y-%m-%d")
-  #   enlisted_regions["enlisted_region_end_incl"] = enlisted_regions["enlisted_region_end_incl"].dt.strftime("%Y-%m-%d")
-  #   enlisted_regions[["symbol", "enlisted_region_start", "enlisted_region_end_incl"]].to_csv(
-  #     instrument_list_save_path / f"{index}.txt", sep='\t', index=False, header=False
-  #   )
+    df["change"] = df["close"] / df["close"].shift(1) - 1
 
-  # for symbol, df in symbol_klines.items():
-  #   normalized_symbol = normalize_symbol(symbol)
-  #   df["date"] = pd.to_datetime(df["date"])
-  #   df = df.set_index("date")
-  #   df = df.reindex(trade_calendar[(trade_calendar >= df.index.min()) & (trade_calendar <= df.index.max())])
-  #   '''
-  #   date,code,open,high,low,close,volume,amount,turn,tradestatus,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST,adjclose
-  #   '''
-  #   df.insert(0, 'date', df.index.strftime("%Y-%m-%d"))
-  #   df.rename(columns={"code": "symbol"}, inplace=True)
-  #   df["symbol"] = normalized_symbol
-  #   # fill missing
-  #   df["close"] = df["close"].ffill()
-  #   # fill ohl with last close
-  #   df["open"] = df["open"].combine_first(df["close"])
-  #   df["high"] = df["high"].combine_first(df["close"])
-  #   df["low"]  = df["low"] .combine_first(df["close"])
-  #   # fill volume with 0
-  #   df["volume"] = df["volume"].fillna(0)
-  #   df["amount"] = df["amount"].fillna(0)
-  #   df["turn"]   = df["turn"]  .fillna(0)
-  #   df["tradestatus"] = df["tradestatus"].fillna(0)
-  #   df.drop(columns="tradestatus", inplace=True)
-
-  #   df["peTTM"] = df["peTTM"].ffill()
-  #   df["pbMRQ"] = df["pbMRQ"].ffill()
-  #   df["psTTM"] = df["psTTM"].ffill()
-  #   df["pcfNcfTTM"] = df["pcfNcfTTM"].ffill()
-  #   df["isST"] = df["isST"].ffill()
-  #   df.drop(columns="isST", inplace=True)
-
-  #   df["factor"] = df["adjclose"] / df["close"]
-  #   df["factor"] = df["factor"].ffill()
-  #   df.drop(columns="adjclose", inplace=True)
-  #   for col in df.columns:
-  #     if col in ["date", "symbol", "amount", "turn", "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM", "factor"]:
-  #       pass
-  #     elif col in ["open", "high", "low", "close"]:
-  #       df[col] = df[col] * df["factor"]
-  #     elif col in ["volume"]:
-  #       df[col] = df[col] / df["factor"]
-  #     else:
-  #       raise ValueError(f"Unknown column: {col}")
-
-  #   df["change"] = df["close"] / df["close"].shift(1) - 1
-
-  #   df.to_csv(processed_kline_path / f"{normalized_symbol}.csv", index=False)
+    os.makedirs(os.path.join(save_path, "processed", "kline_data"), exist_ok=True)
+    df.to_csv(os.path.join(save_path, "processed", "kline_data", f"{normalized_symbol}.csv"), index=False)
 
 
