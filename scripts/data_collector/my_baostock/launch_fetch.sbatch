@@ -40,6 +40,6 @@ srun --environment=/users/ljiayong/projects/qlib/docker/alps/clariden.toml bash 
   date --utc
   cd ./scripts/data_collector/my_baostock
   pip install -r requirements.txt
-  python fetch_list.py
+  python fetch.py
   date --utc
 "

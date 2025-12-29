@@ -1,7 +1,7 @@
 import os
 import sys
 import json
-import filelock
+import numpy as np
 import pandas as pd
 import baostock as bs
 from loguru import logger
@@ -180,6 +180,11 @@ if __name__ == "__main__":
   end   = "2025-12-01" # inc
   tz    = 'Asia/Shanghai'
 
+  # index_lst = ['sz50', 'hs300', 'zz500']
+  index_lst = ['hs300']
+
+  save_path = '/capstor/scratch/cscs/ljiayong/datasets/qlib/baostock_incremental'
+
   run_fetch = False
   margin_end = "5d"
 
@@ -191,15 +196,11 @@ if __name__ == "__main__":
   end_time = pd.Timestamp(end, tz=tz)
   assert start_time <= end_time, f"start_time {start_time} should be <= end_time {end_time}"
 
-  save_path = '/capstor/scratch/cscs/ljiayong/datasets/qlib/baostock_incremental'
-
   index_to_symbol = {
     'sz50' : 'sh.000016',
     'hs300': 'sh.000300',
     'zz500': 'sh.000905',
   }
-  # index_lst = ['sz50', 'hs300', 'zz500']
-  index_lst = ['hs300']
   index_symbols = [index_to_symbol[x] for x in index_lst]
 
   '''
@@ -366,4 +367,51 @@ if __name__ == "__main__":
     os.makedirs(os.path.join(save_path, "processed", "kline_data"), exist_ok=True)
     df.to_csv(os.path.join(save_path, "processed", "kline_data", f"{normalized_symbol}.csv"), index=False)
 
-
+  '''
+  7. Dump Klines
+  '''
+  # 1. calendars
+  trade_calendar = pd.read_csv(os.path.join(save_path, "processed", "trade_dates", "trade_calendar.csv"), header=None).iloc[:,0]
+  os.makedirs(os.path.join(save_path, "bin", "calendars"), exist_ok=True)
+  trade_calendar.to_csv(os.path.join(save_path, "bin", "calendars", "day.txt"), index=False, header=False)
+  # 2. instruments
+  # all
+  all_instruments = []
+  for symbol in all_symbols:
+    normalized_symbol = normalize_symbol(symbol)
+    df = pd.read_csv(os.path.join(save_path, "processed", "kline_data", f"{normalized_symbol}.csv"))
+    if df.empty:
+      continue
+    start_date = df.at[0, "date"]
+    end_date   = df.at[len(df)-1, "date"]
+    all_instruments.append({
+      "symbol": normalized_symbol,
+      "enlisted_region_start": start_date,
+      "enlisted_region_end_incl": end_date,
+    })
+  all_instruments = pd.DataFrame(all_instruments)
+  os.makedirs(os.path.join(save_path, "bin", "instruments"), exist_ok=True)
+  all_instruments[["symbol", "enlisted_region_start", "enlisted_region_end_incl"]].to_csv(
+    os.path.join(save_path, "bin", "instruments", f"all.txt"), sep='\t', index=False, header=False
+  )
+  # index
+  for index in index_lst:
+    enlisted_regions = pd.read_csv(os.path.join(save_path, "processed", "instrument_list", f"{index}.txt"), sep='\t', header=None)
+    enlisted_regions.columns = ["symbol", "enlisted_region_start", "enlisted_region_end_incl"]
+    enlisted_regions[["symbol", "enlisted_region_start", "enlisted_region_end_incl"]].to_csv(
+      os.path.join(save_path, "bin", "instruments", f"{index}.txt"), sep='\t', index=False, header=False
+    )
+  # 3. features
+  for symbol in all_symbols:
+    normalized_symbol = normalize_symbol(symbol)
+    df = pd.read_csv(os.path.join(save_path, "processed", "kline_data", f"{normalized_symbol}.csv"))
+    if df.empty:
+      continue
+    symbol_features_path = os.path.join(save_path, "bin", "features", normalized_symbol.lower())
+    os.makedirs(symbol_features_path, exist_ok=True)
+    date_index = trade_calendar.tolist().index(df.at[0, "date"])
+    for field in df.columns:
+      if field in ["date", "symbol"]:
+        continue
+      bin_path = os.path.join(symbol_features_path, f"{field.lower()}.day.bin")
+      np.concatenate([[date_index], df[field]]).astype("<f").tofile(bin_path)
