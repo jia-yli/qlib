@@ -34,3 +34,83 @@ def suggest_lightgbm_config(trial):
     },
   }
   return trial_config
+
+def suggest_gats_config(trial):
+  data_handler_config = {
+    "infer_processors": [
+      {
+        "class": "FilterCol",
+        "kwargs": {
+          "fields_group": "feature",
+          "col_list": [
+            "RESI5", "WVMA5", "RSQR5", "KLEN", 
+            "RSQR10", "CORR5", "CORD5", "CORR10", 
+            "ROC60", "RESI10", "VSTD5", "RSQR60", 
+            "CORR60", "WVMA60", "STD5", "RSQR20", 
+            "CORD60", "CORD10", "CORR20", "KLOW"
+          ]
+        }
+      },
+      {
+        "class": "RobustZScoreNorm",
+        "kwargs": {
+          "fields_group": "feature",
+          "clip_outlier": True
+        }
+      },
+      {
+        "class": "Fillna",
+        "kwargs": {
+          "fields_group": "feature"
+        }
+      },
+    ],
+    "learn_processors": [
+      {
+        "class": "DropnaLabel",
+      },
+      {
+        "class": "CSRankNorm",
+        "kwargs": {
+          "fields_group": "label"
+        }
+      },
+    ],
+  }
+
+  model_config = {
+    "class": "GATs",
+    "module_path": "qlib.contrib.model.pytorch_gats_ts",
+    "kwargs": {
+      "d_feat": 20,
+      "hidden_size": trial.suggest_categorical("hidden_size", [16, 32, 64, 96, 128, 192, 256]),
+      "num_layers": trial.suggest_int("num_layers", 1, 6),
+      "dropout": trial.suggest_float("dropout", 0.0, 1.0),
+      "n_epochs": 200,
+      "lr": trial.suggest_float("lr", 1e-6, 1e-2, log=True),
+      "early_stop": 10,
+      "metric": "loss",
+      "optimizer": trial.suggest_categorical("optimizer", ["adam", "gd"]),
+      "loss": "mse",
+      "base_model": trial.suggest_categorical("base_model", ["GRU", "LSTM"]),
+      "GPU": 0,
+      "seed": 42,
+    }
+  }
+
+  trial_config = {
+    "data_handler_config": data_handler_config,
+    "model": model_config,
+    "dataset": {
+      "class": "TSDatasetH",
+      "module_path": "qlib.data.dataset",
+      "kwargs": {
+        "step_len": 20
+      }
+    },
+    "data_handler": {
+      "class": "Alpha158",
+      "module_path": "qlib.contrib.data.handler"
+    }
+  }
+  return trial_config
