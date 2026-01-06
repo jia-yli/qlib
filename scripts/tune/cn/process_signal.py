@@ -151,67 +151,6 @@ def process_task(task_results, task_idx, save_path):
   plt.savefig(os.path.join(save_path, f"task_{task_idx}_top_{k}_sim_results.png"), bbox_inches="tight", dpi=500)
   plt.close()
 
-
-def run_sim(signal, base_config):
-  benchmark = base_config["benchmark"]
-  freq = base_config["freq"]
-  deal_price = base_config["deal_price"]
-
-  strategy_config = {
-    "class": "TopkDropoutStrategy",
-    "module_path": "qlib.contrib.strategy",
-    "kwargs": {
-      "signal": signal,
-      "topk": 20,
-      "n_drop": 2
-    }
-  }
-  # {
-  #   "class": "EnhancedIndexingStrategy",
-  #   "module_path": "qlib.contrib.strategy",
-  #   "kwargs": {
-  #     "signal": recorder.load_object(f"pred_{split}.pkl"),
-  #     "riskmodel_root": "/iopsstor/scratch/cscs/ljiayong/workspace/qlib/risk/cn/riskdata",
-  #   }
-  # }
-  port_analysis_config = {
-    "executor": {
-      "class": "SimulatorExecutor",
-      "module_path": "qlib.backtest.executor",
-      "kwargs": {
-        "time_per_step": "day" if freq == "1d" else freq,
-        "generate_portfolio_metrics": True,
-      },
-    },
-    "strategy": strategy_config,
-    "backtest": {
-      "start_time": signal.index.get_level_values("datetime").min().strftime("%Y-%m-%d"),
-      "end_time": signal.index.get_level_values("datetime").max().strftime("%Y-%m-%d"),
-      "account": 1_000_000,
-      "benchmark": benchmark,
-      "exchange_kwargs": {
-        "freq": "day",
-        "trade_unit": 100,
-        "limit_threshold": 0.095,
-        "deal_price": deal_price,
-        "open_cost": 0.002,
-        "close_cost": 0.0025,
-        "min_cost": 5
-      }
-    }
-  }
-  steps_per_year = 246
-  portfolio_metric_dict, indicator_dict = backtest(executor=port_analysis_config["executor"], strategy=port_analysis_config["strategy"], **port_analysis_config["backtest"])
-  report = portfolio_metric_dict["1day" if freq == "1d" else freq][0]
-  # position = portfolio_metric_dict["1day" if freq == "1d" else freq][1]
-  # indicator = indicator_dict["1day" if freq == "1d" else freq]
-  # print(risk_analysis(report["bench"], N=steps_per_year, mode="product"))
-  # print(risk_analysis(report["return"]-report["cost"], N=steps_per_year, mode="product"))
-  # print(fit_capm(report["return"]-report["cost"], report["bench"], N=steps_per_year, r_f_annual=2e-2))
-  # analysis_position.report_graph(report, show_notebook=False, save_path=os.path.join(os.path.dirname(__file__), f"plots_{split}"))
-  return report
-
-
 def plot_task(task_results, task_idx, save_path):
   # [top_k_idx][fold_idx]
   k = len(task_results)
@@ -365,19 +304,184 @@ def plot_all_tasks(results, save_path):
   plt.savefig(os.path.join(save_path, f"deploy_top_{k}_results.png"), bbox_inches="tight", dpi=500)
   plt.close()
 
-def main(model_name="GATs", workflow="single"):
-  market = "zz500" # sz50, hs300, zz500
-  benchmark = "SH000905" # SH000016, SH000300, SH000905
+def get_prediction(result):
+  base_config = result["base_config"]
+  dataset = result["dataset"]
+  model = result["model"]
+
+  valid_split = base_config["valid_split"]
+  test_split = base_config["test_split"]    
+
+  dataset.config(handler_kwargs={"end_time": test_split[1]})
+  dataset.setup_data(handler_kwargs={"init_type": DataHandlerLP.IT_LS})
+
+  start_time_lst = [valid_split[0], test_split[0]]
+  end_time = test_split[1]
+
+  signal = [
+    model.predict(dataset, segment=slice(start_time, end_time))
+    for start_time in start_time_lst
+  ]
+  # assert signal[1].equals(result["pred_test"])
+  return signal
+
+def simulate_signal(signals, base_config):
+  benchmark = base_config["benchmark"]
+  deal_price = base_config["deal_price"]
+  freq = base_config["freq"]
+
+  results = []
+  for signal in signals:
+    strategy_config = {
+      "class": "TopkDropoutStrategy",
+      "module_path": "qlib.contrib.strategy",
+      "kwargs": {
+        "signal": signal,
+        "topk": 20,
+        "n_drop": 2
+      }
+    }
+    # {
+    #   "class": "EnhancedIndexingStrategy",
+    #   "module_path": "qlib.contrib.strategy",
+    #   "kwargs": {
+    #     "signal": recorder.load_object(f"pred_{split}.pkl"),
+    #     "riskmodel_root": "/iopsstor/scratch/cscs/ljiayong/workspace/qlib/risk/cn/riskdata",
+    #   }
+    # }
+    port_analysis_config = {
+      "executor": {
+        "class": "SimulatorExecutor",
+        "module_path": "qlib.backtest.executor",
+        "kwargs": {
+          "time_per_step": "day" if freq == "1d" else freq,
+          "generate_portfolio_metrics": True,
+        },
+      },
+      "strategy": strategy_config,
+      "backtest": {
+        "start_time": signal.index.get_level_values("datetime").min().strftime("%Y-%m-%d"),
+        "end_time": signal.index.get_level_values("datetime").max().strftime("%Y-%m-%d"),
+        "account": 1_000_000,
+        "benchmark": benchmark,
+        "exchange_kwargs": {
+          "freq": "day",
+          "trade_unit": 100,
+          "limit_threshold": 0.095,
+          "deal_price": deal_price,
+          "open_cost": 0.002,
+          "close_cost": 0.0025,
+          "min_cost": 5
+        }
+      }
+    }
+    steps_per_year = 246
+    portfolio_metric_dict, indicator_dict = backtest(executor=port_analysis_config["executor"], strategy=port_analysis_config["strategy"], **port_analysis_config["backtest"])
+    report = portfolio_metric_dict["1day" if freq == "1d" else freq][0]
+    # position = portfolio_metric_dict["1day" if freq == "1d" else freq][1]
+    # indicator = indicator_dict["1day" if freq == "1d" else freq]
+    # print(risk_analysis(report["bench"], N=steps_per_year, mode="product"))
+    # print(risk_analysis(report["return"]-report["cost"], N=steps_per_year, mode="product"))
+    # print(fit_capm(report["return"]-report["cost"], report["bench"], N=steps_per_year, r_f_annual=2e-2))
+    # analysis_position.report_graph(report, show_notebook=False, save_path=os.path.join(os.path.dirname(__file__), f"plots_{split}"))
+    results.append({
+      "report": report,
+    })
+  
+  return results
+
+def _plot_simulate_signal_results(all_reports, all_names, title, save_path):
+  steps_per_year = 246
+  return_cum = []
+  cost_cum = []
+  bench_cum = []
+  metrics = []
+
+  for idx, df in enumerate(all_reports):
+    r = df['return'] - df['cost']
+    cum_r = (1 + r).cumprod() - 1
+    cum_c = ((1 + cum_r) * df['cost']).cumsum()
+    cum_b = (1 + df['bench']).cumprod() - 1
+
+    return_cum.append(cum_r)
+    cost_cum.append(cum_c)
+    bench_cum.append(cum_b)
+
+    metrics.append((
+      risk_analysis(r, N=steps_per_year, mode="product"),
+      fit_capm(r, df['bench'], N=steps_per_year, r_f_annual=2e-2)
+    ))
+
+  fig, axes = plt.subplots(3, 1, figsize=(6, 10))
+  fig.suptitle(title)
+
+  # return
+  ax = axes[0]
+  for i, s in enumerate(return_cum):
+    ax.plot(s.index, s.values, label=all_names[i])
+  ax.plot(bench_cum[0].index, bench_cum[0].values, label="Bench", linestyle='--', linewidth=1)
+  ax.set_title(f"Total Return")
+  ax.set_ylabel("Total Return")
+  ax.tick_params(labelbottom=False)
+
+  # cost
+  ax = axes[1]
+  for i, s in enumerate(cost_cum):
+    ax.plot(s.index, s.values, label=all_names[i])
+  ax.set_title(f"Cost Ratio")
+  ax.set_ylabel("Cost Ratio")
+  ax.tick_params(labelbottom=False)
+
+  # excess return
+  ax = axes[2]
+  for i, (r, b) in enumerate(zip(return_cum, bench_cum)):
+    excess = r - b
+    ax.plot(excess.index, excess.values, label=all_names[i])
+  ax.set_title(f"Excess Return")
+  ax.set_ylabel("Excess Return")
+  ax.tick_params(axis='x', rotation=90)
+
+  for ax in axes.flat:
+    ax.grid()
+    ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
+
+  os.makedirs(os.path.dirname(save_path), exist_ok=True)
+  plt.savefig(save_path, bbox_inches="tight", dpi=500)
+  plt.close()
+
+def plot_simulate_signal_results(signal_results, avg_signal_results, save_path):
+  n = len(avg_signal_results)
+  k = len(signal_results) // n
+  num_splits = len(signal_results[0])
+  for split_idx in range(num_splits):
+    for group_idx in range(n):
+      all_reports = signal_results[group_idx*k:(group_idx+1)*k] + [avg_signal_results[group_idx]]
+      all_reports = [r[split_idx]["report"] for r in all_reports]
+      all_names = [f"Top-{i+1}" for i in range(k)] + ["Avg"]
+
+      _plot_simulate_signal_results(
+        all_reports,
+        all_names,
+        title=f"Top-{k} Group {group_idx} Split {split_idx} Simulation Results",
+        save_path=os.path.join(save_path, f"top_{k}_group_{group_idx}_split_{split_idx}_sim_results.png"),
+      )
+    
+    _plot_simulate_signal_results(
+      [r[split_idx]["report"] for r in avg_signal_results],
+      [f"Group-{i} Avg" for i in range(n)],
+      title=f"Avg Signal Top-{k} Group {group_idx} Split {split_idx} Simulation Results",
+      save_path=os.path.join(save_path, f"avg_top_{k}_group_{group_idx}_split_{split_idx}_sim_results.png"),
+    )
+
+
+def main(model_name="GATs"):
+  market = "hs300" # sz50, hs300, zz500
+  benchmark = "SH000300" # SH000016, SH000300, SH000905
   deal_price = "close"
   freq = "1d"
 
-  if workflow == "single":
-    n_tasks = 1 # number of different hyperparameter optimization tasks = num test splits
-    n_folds = 0 # number of cross-validation folds, 0 means no CV
-  elif workflow == "rolling_cv":
-    n_tasks = 7 # number of different hyperparameter optimization tasks = num test splits
-    n_folds = 4 # number of cross-validation folds, 0 means no CV
-  k = 5  # top k models to select and plot
+  k = 5 # top k models to select and plot
+  n = 3 # num top-k groups, n*k trials in total
 
   identifier = f"tune_single_{model_name.lower()}_{market}_{deal_price}_{freq}"
 
@@ -385,7 +489,40 @@ def main(model_name="GATs", workflow="single"):
   storage = JournalStorage(JournalFileBackend(os.path.join(workspace_path, f"optuna/{identifier}_journal.log")))
 
   '''
-  Load Top K Runs
+  Results to Sqlite DB
+  '''
+  dst_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"results/{identifier}_sqlite.db")
+  os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+  os.path.exists(dst_path) and os.remove(dst_path)
+
+  study_names = optuna.study.get_all_study_names(storage=storage)
+  for study_name in study_names:
+    logger.info(f"Copying study: {study_name}, {len(study_names)} studies in total ...")
+    optuna.copy_study(
+      from_study_name=study_name,
+      from_storage=storage,
+      to_storage=f"sqlite:///{dst_path}",
+    )
+
+  '''
+  Load Trials
+  '''
+  study_name = f"task_0"
+  study = optuna.load_study(study_name=study_name, storage=storage)
+  trials_data = []
+  for trial in study.trials:
+    trial_dict = {
+      'trial_number': trial.number,
+      'state': trial.state.name,
+      'value': trial.value,
+    }
+    trial_dict.update(trial.user_attrs)
+    trials_data.append(trial_dict)
+  df = pd.DataFrame(trials_data)
+  df = df[df['state'] == 'COMPLETE'].dropna().reset_index(drop=True)
+
+  '''
+  Init Qlib
   '''
   qlib.init(**{
     "provider_uri": "/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock/bin",
@@ -400,71 +537,62 @@ def main(model_name="GATs", workflow="single"):
     }
   })
 
-  dfs = []
-  for task_idx in range(n_tasks):
-    study_name = f"task_{task_idx}"
-    study = optuna.load_study(study_name=study_name, storage=storage)
-    trials_data = []
-    for trial in study.trials:
-      trial_dict = {
-        'trial_number': trial.number,
-        'state': trial.state.name,
-        'value': trial.value,
-      }
-      trial_dict.update(trial.user_attrs)
-      trials_data.append(trial_dict)
-    df = pd.DataFrame(trials_data)
-    df = df[df['state'] == 'COMPLETE'].dropna().reset_index(drop=True)
+  '''
+  Load Trial Artifacts
+  '''
+  results = [] # [n*k]
+  df = df.sort_values("value", ascending=False).reset_index(drop=True).head(n*k)
+  for idx in range(len(df)):
+    recorder = R.get_recorder(experiment_name="task_0", recorder_id=df.at[idx, f"rid"])
+    artifacts = {
+      "base_config": recorder.load_object("base_config.pkl"),
+      "dataset": recorder.load_object("dataset.pkl"),
+      "model": recorder.load_object("model.pkl"),
+      "pred_valid": recorder.load_object(f"pred_valid.pkl"),
+      "pred_test": recorder.load_object(f"pred_test.pkl"),
+    }
+    results.append(artifacts)
 
-    dfs.append(df)
+  base_config = results[0]["base_config"]
 
-  save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"results/plots/{identifier}")
-  results = [] # [task_idx][k_idx][fold_idx]
-  for task_idx, df in enumerate(dfs):
-    df = df.sort_values("value", ascending=False).reset_index(drop=True).head(k)
-    task_results = [] # [top_k_idx][fold_idx]
-    for top_idx in range(k):
-      trial_results = [] # [fold_idx]
-      if n_folds == 0:
-        recorder = R.get_recorder(experiment_name=f"task_{task_idx}", recorder_id= df.loc[top_idx, f"rid"])
-        trial_results.append({
-          "base_config": recorder.load_object("base_config.pkl"),
-          "dataset": recorder.load_object("dataset.pkl"),
-          "model": recorder.load_object("model.pkl"),
-          "pred": recorder.load_object("pred_valid.pkl"),
-          "report": recorder.load_object("portfolio_metric_valid.pkl")["1day" if freq == "1d" else freq][0],
-        })
-        trial_results.append({
-          "base_config": recorder.load_object("base_config.pkl"),
-          "dataset": recorder.load_object("dataset.pkl"),
-          "model": recorder.load_object("model.pkl"),
-          "pred": recorder.load_object("pred_test.pkl"),
-          "report": recorder.load_object("portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0],
-        })
-      else:
-        for fold_idx in range(n_folds):
-          recorder = R.get_recorder(experiment_name=f"task_{task_idx}", recorder_id=df.loc[top_idx, f"fit_{fold_idx}_rid"])
-          trial_results.append({
-            "base_config": recorder.load_object("base_config.pkl"),
-            "dataset": recorder.load_object("dataset.pkl"),
-            "model": recorder.load_object("model.pkl"),
-            "pred": recorder.load_object("pred_test.pkl"),
-            "report": recorder.load_object("portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0],
-          })
-        recorder = R.get_recorder(experiment_name=f"task_{task_idx}", recorder_id= df.loc[top_idx, f"deploy_rid"])
-        trial_results.append({
-          "base_config": recorder.load_object("base_config.pkl"),
-          "dataset": recorder.load_object("dataset.pkl"),
-          "model": recorder.load_object("model.pkl"),
-          "pred": recorder.load_object("pred_test.pkl"),
-          "report": recorder.load_object("portfolio_metric_test.pkl")["1day" if freq == "1d" else freq][0],
-        })
-      task_results.append(trial_results)
-    # plot current cv task
-    plot_task(task_results, task_idx, save_path)
-    process_task(task_results, task_idx, save_path)
-    results.append(task_results)
-  plot_all_tasks(results, save_path)
+  '''
+  Generate Predictions
+  '''
+  signals = [get_prediction(result) for result in results] # [n*k][split]
+  
+  avg_signals = [] # [n][split]
+  for group_idx in range(n):
+    signal_group = signals[group_idx*k:(group_idx+1)*k]
+    avg_signal = []
+    for i in range(len(signals[0])):
+      avg_s = pd.concat([s[i] for s in signal_group], axis=1)
+      avg_s = avg_s.groupby("datetime").transform(lambda x: (x - x.mean()) / x.std())
+      avg_s = avg_s.mean(axis=1)
+      avg_signal.append(avg_s)
+    avg_signals.append(avg_signal)
+
+  '''
+  Signal Analysis
+  '''
+  # analyze_signal_results = [analyze_signal(signal, base_config) for signal in signals]
+  # analyze_avg_signal_results = [analyze_signal(avg_signal, base_config) for avg_signal in avg_signals]
+  
+  # plot_analyze_signal_results(
+  #   analyze_signal_results,
+  #   analyze_avg_signal_results,
+  # )
+  
+  '''
+  Simulation
+  '''
+  simulate_signal_results = [simulate_signal(signal, base_config) for signal in signals]
+  simulate_avg_signal_results = [simulate_signal(avg_signal, base_config) for avg_signal in avg_signals]
+  
+  plot_simulate_signal_results(
+    simulate_signal_results,
+    simulate_avg_signal_results,
+    save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"results/simulation/{identifier}")
+  )
 
 
 if __name__ == "__main__":
