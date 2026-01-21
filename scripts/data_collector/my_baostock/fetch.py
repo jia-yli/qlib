@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import shutil
 import numpy as np
 import pandas as pd
 import baostock as bs
@@ -171,26 +172,37 @@ def fetch_kline_data(start_time, end_time, symbol):
     raise ValueError(f"Fetch {symbol} adj price from {start} to {end} error, code: {rs_adj.error_code}, msg: {rs_adj.error_msg}")
   return df
 
+@deco_retry(retry_sleep=5, retry=2)
+def fetch_stock_industry():
+  rs = bs.query_stock_industry()
+  if rs.error_code == "0":
+    data_list = rs.data
+    columns = rs.fields
+    df = pd.DataFrame(data_list, columns=columns)
+  else:
+    raise ValueError(f"Fetch stock industry error, code: {rs.error_code}, msg: {rs.error_msg}")
+  return df
+
 def normalize_symbol(symbol):
   return str(symbol).replace(".", "").upper()
 
 if __name__ == "__main__":
   # args
-  start = "2019-01-01" # inc
-  end   = "2025-12-01" # inc
+  start = "2010-01-01" # inc
+  end   = "2025-12-15" # inc
   tz    = 'Asia/Shanghai'
 
-  # index_lst = ['sz50', 'hs300', 'zz500']
-  index_lst = ['hs300']
+  index_lst = ['sz50', 'hs300', 'zz500']
+  # index_lst = ['hs300']
 
-  save_path = '/capstor/scratch/cscs/ljiayong/datasets/qlib/baostock_incremental'
+  save_path = '/capstor/scratch/cscs/ljiayong/datasets/qlib/my_baostock'
 
   run_fetch = False
   margin_end = "5d"
 
+  now_utc = pd.Timestamp.now(tz='UTC')
   if end is None:
-    now = pd.Timestamp.now(tz='UTC').tz_convert(tz)
-    end = now.strftime("%Y-%m-%d")
+    end = now_utc.tz_convert(tz).strftime("%Y-%m-%d")
   
   start_time = pd.Timestamp(start, tz=tz)
   end_time = pd.Timestamp(end, tz=tz)
@@ -202,6 +214,16 @@ if __name__ == "__main__":
     'zz500': 'sh.000905',
   }
   index_symbols = [index_to_symbol[x] for x in index_lst]
+
+  # backup save path
+  now_utc_str = now_utc.strftime("%Y%m%d_%H%M%S") + "_utc"
+  backup_path = save_path + "_backup_" + now_utc_str
+  if run_fetch:
+    if os.path.exists(save_path):
+      logger.info(f"Backing up existing data folder {save_path} to {backup_path} ...")
+      if os.path.exists(backup_path):
+        shutil.rmtree(backup_path)
+      shutil.copytree(save_path, backup_path)
 
   '''
   1. Fetch Trade Calendar
@@ -335,6 +357,9 @@ if __name__ == "__main__":
     df["open"] = df["open"].combine_first(df["close"])
     df["high"] = df["high"].combine_first(df["close"])
     df["low"]  = df["low"] .combine_first(df["close"])
+    # get vwap
+    df["vwap"] = df["amount"] / df["volume"]
+    df["vwap"] = df["vwap"].combine_first(df["close"])
     # fill volume with 0
     df["volume"] = df["volume"].fillna(0)
     df["amount"] = df["amount"].fillna(0)
@@ -355,7 +380,7 @@ if __name__ == "__main__":
     for col in df.columns:
       if col in ["date", "symbol", "amount", "turn", "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM", "factor"]:
         pass
-      elif col in ["open", "high", "low", "close"]:
+      elif col in ["open", "high", "low", "close", "vwap"]:
         df[col] = df[col] * df["factor"]
       elif col in ["volume"]:
         df[col] = df[col] / df["factor"]
@@ -368,7 +393,42 @@ if __name__ == "__main__":
     df.to_csv(os.path.join(save_path, "processed", "kline_data", f"{normalized_symbol}.csv"), index=False)
 
   '''
-  7. Dump Klines
+  7. Fetch Stock Industry
+  '''
+  if run_fetch:
+    bs.login()
+    logger.info(f"Fetching stock industry ...")
+    df = fetch_stock_industry()
+    os.makedirs(os.path.join(save_path, "raw", "stock_industry"), exist_ok=True)
+    df.to_csv(os.path.join(save_path, "raw", "stock_industry", "stock_industry.csv"), index=False)
+    bs.logout()
+
+  '''
+  8. Process Stock Industry
+  '''
+  df = pd.read_csv(os.path.join(save_path, "raw", "stock_industry", "stock_industry.csv"))
+  '''
+  updateDate,code,code_name,industry,industryClassification
+  '''
+  df.drop(columns="updateDate", inplace=True)
+  df.rename(columns={"code": "symbol"}, inplace=True)
+  df['symbol'] = df['symbol'].apply(normalize_symbol)
+  df.drop(columns="code_name", inplace=True)
+
+  # 国民经济行业分类 GB/T 4754—2017
+  # https://www.beijing.gov.cn/zhengce/zhengcefagui/202304/W020230410621028325997.pdf
+  industry = df["industry"].copy() # e.g. J66货币金融服务
+  df.drop(columns="industry", inplace=True)
+  df["sector"] = industry.str.extract(r"^([A-Z])", expand=False)
+  df["industry"] = industry.str.extract(r"^([A-Z]\d\d)", expand=False)
+  # df["industry_name"] = industry.str.replace(r"^[A-Z]\d\d", "", regex=True)
+  df.drop(columns="industryClassification", inplace=True)
+
+  os.makedirs(os.path.join(save_path, "processed", "stock_industry"), exist_ok=True)
+  df.to_csv(os.path.join(save_path, "processed", "stock_industry", "stock_industry.csv"), index=False)
+
+  '''
+  9. Dump Klines
   '''
   # 1. calendars
   trade_calendar = pd.read_csv(os.path.join(save_path, "processed", "trade_dates", "trade_calendar.csv"), header=None).iloc[:,0]

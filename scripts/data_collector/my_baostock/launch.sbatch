@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --account=a-g34                   # account to use
 #SBATCH --job-name=fetch             # Job name
-#SBATCH --output=./slurm_out/job_%j_out.txt   # Output file (job ID and task number)
-#SBATCH --error=./slurm_out/job_%j_err.txt    # Error file (job ID and task number)
+#SBATCH --output=./slurm_out/job_%j.txt   # Output file (job ID and task number)
+#SBATCH --error=./slurm_out/job_%j.txt    # Error file (job ID and task number)
 #SBATCH --partition=normal                # Partitions to submit the job
 #SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1                        # Number of tasks (1 for single task)
@@ -38,13 +38,8 @@ ENV_VARS="
 srun --environment=/users/ljiayong/projects/qlib/docker/alps/clariden.toml bash -c "
   ${ENV_VARS}
   date --utc
-  pip install -e .
   cd ./scripts/data_collector/my_baostock
   pip install -r requirements.txt
-  python collector.py download_data \
-    --source_dir /capstor/scratch/cscs/ljiayong/datasets/qlib/cn_my_baostock/src \
-    --start 2020-01-01 \
-    --end 2025-10-01 \
-    --interval 1d
+  python fetch.py
   date --utc
 "

@@ -25,14 +25,17 @@ if lg.error_code != '0':
 
 # hs300_stocks = fetch_hs300_stocks()
 
-def fetch_day_kline(code, start_date, end_date):
+def fetch_day_kline(code, start_date, end_date, frequency="d", adjustflag="3"):
   rs = bs.query_history_k_data_plus(
     code,
-    "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST",
+    # day
+    # "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST,peTTM,pbMRQ,psTTM,pcfNcfTTM",
+    # min
+    "date,code,open,high,low,close,volume,amount,adjustflag",
     start_date=start_date, 
     end_date=end_date,
-    frequency="d",
-    adjustflag="1")
+    frequency=frequency,
+    adjustflag=adjustflag)
   # rs = bs.query_history_k_data_plus(
   #   "sh.000016",
   #   "date,code,open,high,low,close,preclose,volume,amount,pctChg",
@@ -51,9 +54,12 @@ def fetch_day_kline(code, start_date, end_date):
   
   return pd.DataFrame(data_list, columns=rs.fields)
 
-data = fetch_day_kline("sh.600000", '2025-09-25', '2025-09-25')
+# data = fetch_day_kline("sh.600000", '2025-10-17', '2025-10-17', frequency="d", adjustflag="3")
 # data = fetch_day_kline("sh.000016", '2025-09-25', '2025-09-25')
+# fetch_day_kline("sh.601989", '2025-08-18', '2025-09-10', adjustflag="1")
 
 import pdb;pdb.set_trace()
+bs.query_profit_data(code="sh.600000", year=2017, quarter=2)
+bs.query_stock_industry()
 
 bs.logout()
